@@ -24,14 +24,6 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
-# Try to import local Whisper
-try:
-    import whisper
-    import torch
-    LOCAL_WHISPER_AVAILABLE = True
-except ImportError:
-    LOCAL_WHISPER_AVAILABLE = False
-
 # Try to import AssemblyAI
 try:
     import assemblyai as aai
@@ -52,7 +44,7 @@ DEFAULT_CONFIG = {
     'keywords': ['ice', 'immigration', 'federal', 'detain', 'dpss', 'gunshot', 'shots fired', 'officer down'],
     'openai_api_key': '',
     'assemblyai_api_key': '2d7021a9d04f4c0cb952ecc892f3880c',
-    'transcription_provider': 'assemblyai'  # Options: 'assemblyai', 'openai', 'local_whisper'
+    'transcription_provider': 'assemblyai'
 }
 
 # Initialize session state
@@ -71,6 +63,8 @@ def init_session_state():
         'user_id': None,
         'monitor_thread': None,
         'stop_event': None,
+        'monitor_log': [],
+        'last_activity': 'Never',
         **DEFAULT_CONFIG
     }
     
@@ -151,37 +145,6 @@ class RadioMonitorAPI:
             st.error(f"Authentication error: {e}")
             return False
     
-    def test_live_calls_api(self):
-        """Test the live calls API endpoint"""
-        try:
-            # First authenticate user
-            if not self.authenticate_user():
-                return False, "Authentication failed"
-            
-            # Generate authenticated JWT
-            jwt_token = self.generate_jwt(include_user_auth=True)
-            if not jwt_token:
-                return False, "JWT generation failed"
-            
-            headers = {"Authorization": f"Bearer {jwt_token}"}
-            
-            # Test with a dummy group (won't return calls but will test endpoint)
-            params = {
-                "groups": "100-22361",  # Example group
-                "init": "1"
-            }
-            
-            response = requests.get(f"{self.base_url}/calls/v1/live/", headers=headers, params=params)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return True, f"Success! Endpoint works. Response keys: {list(data.keys())}"
-            else:
-                return False, f"Error {response.status_code}: {response.text}"
-        
-        except Exception as e:
-            return False, f"Exception: {e}"
-    
     def get_live_calls(self, group_ids, last_pos=None):
         """Get live calls for selected groups with detailed logging"""
         try:
@@ -191,7 +154,6 @@ class RadioMonitorAPI:
             jwt_token = self.generate_jwt(include_user_auth=True)
             headers = {"Authorization": f"Bearer {jwt_token}"}
             
-            # Don't limit to 5 groups - use all selected groups
             groups_param = ",".join(group_ids)
             
             params = {"groups": groups_param}
@@ -203,8 +165,6 @@ class RadioMonitorAPI:
             # Log the request details
             current_time = datetime.now().strftime('%H:%M:%S')
             log_entry = f"[{current_time}] API Request - Groups: {groups_param}, LastPos: {last_pos}"
-            if 'monitor_log' not in st.session_state:
-                st.session_state.monitor_log = []
             st.session_state.monitor_log.append(log_entry)
             
             response = requests.get(f"{self.base_url}/calls/v1/live/", headers=headers, params=params)
@@ -221,10 +181,9 @@ class RadioMonitorAPI:
                 # Log details about each call
                 for i, call in enumerate(calls):
                     group_id = call.get('groupId', 'Unknown')
-                    call_id = call.get('id', 'Unknown')
-                    ts = call.get('ts', 'Unknown')
-                    audio_url = call.get('audioUrl', 'No URL')
+                    call_id = call.get('ts', 'Unknown')
                     duration = call.get('duration', 'Unknown')
+                    audio_url = call.get('url', 'No URL')
                     
                     log_entry = f"[{current_time}] Call {i+1}: Group={group_id}, ID={call_id}, Duration={duration}s, HasAudio={bool(audio_url)}"
                     st.session_state.monitor_log.append(log_entry)
@@ -239,62 +198,133 @@ class RadioMonitorAPI:
         except Exception as e:
             current_time = datetime.now().strftime('%H:%M:%S')
             log_entry = f"[{current_time}] Exception in get_live_calls: {e}"
-            if 'monitor_log' not in st.session_state:
-                st.session_state.monitor_log = []
             st.session_state.monitor_log.append(log_entry)
             st.error(f"Live calls error: {e}")
             return [], None
 
-class SimpleTranscriber:
-    """Simple transcription handler"""
+class MultiTranscriber:
+    """Multi-provider transcription handler"""
     
     def __init__(self):
-        self.client = None
+        self.providers = {}
+        self.active_provider = None
+        self.setup_providers()
+    
+    def setup_providers(self):
+        """Initialize all available transcription providers"""
+        provider_preference = st.session_state.get('transcription_provider', 'assemblyai')
+        
+        # Setup AssemblyAI
+        if ASSEMBLYAI_AVAILABLE and st.session_state.get('assemblyai_api_key'):
+            try:
+                aai.settings.api_key = st.session_state.assemblyai_api_key
+                self.providers['assemblyai'] = {
+                    'name': 'AssemblyAI',
+                    'status': '✅ Ready',
+                    'cost': 'Low ($0.37/hour)',
+                    'speed': 'Fast'
+                }
+            except Exception as e:
+                pass
+        
+        # Setup OpenAI API
         if OPENAI_AVAILABLE and st.session_state.get('openai_api_key'):
             try:
-                self.client = OpenAI(api_key=st.session_state.openai_api_key)
+                self.openai_client = OpenAI(api_key=st.session_state.openai_api_key)
+                self.providers['openai'] = {
+                    'name': 'OpenAI Whisper API',
+                    'status': '✅ Ready',
+                    'cost': 'Medium ($0.36/hour)',
+                    'speed': 'Medium'
+                }
             except Exception as e:
-                st.error(f"OpenAI client setup error: {e}")
+                pass
+        
+        # Set active provider based on preference and availability
+        if provider_preference in self.providers:
+            self.active_provider = provider_preference
+        elif self.providers:
+            self.active_provider = list(self.providers.keys())[0]
+        else:
+            self.active_provider = None
     
     def transcribe_call(self, audio_url):
-        """Transcribe audio using OpenAI Whisper"""
-        if not self.client:
-            return "📞 Radio call captured - Add OpenAI API key for transcription"
+        """Transcribe audio using the active provider"""
+        if not self.active_provider:
+            return "📞 Radio call captured - No transcription provider configured"
+        
+        provider = self.active_provider
         
         try:
-            # Download audio file
-            import tempfile
-            import os
-            
-            response = requests.get(audio_url, timeout=30)
-            if response.status_code != 200:
-                return f"❌ Failed to download audio: {response.status_code}"
-            
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
-                temp_file.write(response.content)
-                temp_file_path = temp_file.name
-            
-            try:
-                # Transcribe with OpenAI Whisper
-                with open(temp_file_path, 'rb') as audio_file:
-                    transcript = self.client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=audio_file,
-                        response_format="text"
-                    )
-                
-                return transcript.strip() if transcript.strip() else "🔇 [No speech detected]"
-                
-            finally:
-                # Clean up temp file
-                try:
-                    os.unlink(temp_file_path)
-                except:
-                    pass
-                    
+            if provider == 'assemblyai':
+                return self._transcribe_assemblyai(audio_url)
+            elif provider == 'openai':
+                return self._transcribe_openai_api(audio_url)
+            else:
+                return f"❌ Unknown provider: {provider}"
         except Exception as e:
-            return f"❌ Transcription error: {e}"
+            return f"❌ {self.providers.get(provider, {}).get('name', 'Unknown')} error: {e}"
+    
+    def _transcribe_assemblyai(self, audio_url):
+        """Transcribe using AssemblyAI (direct URL support)"""
+        config = aai.TranscriptionConfig(
+            speech_model=aai.SpeechModel.best,
+            auto_highlights=False
+        )
+        
+        transcriber = aai.Transcriber(config=config)
+        transcript = transcriber.transcribe(audio_url)
+        
+        if transcript.status == "error":
+            return f"❌ AssemblyAI error: {transcript.error}"
+        
+        text = transcript.text.strip() if transcript.text else ""
+        return text if text else "🔇 [No speech detected]"
+    
+    def _transcribe_openai_api(self, audio_url):
+        """Transcribe using OpenAI API"""
+        import tempfile
+        import os
+        
+        # Download audio file
+        response = requests.get(audio_url, timeout=30)
+        if response.status_code != 200:
+            return f"❌ Failed to download audio: {response.status_code}"
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Transcribe with OpenAI Whisper API
+            with open(temp_file_path, 'rb') as audio_file:
+                transcript = self.openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="text"
+                )
+            
+            return transcript.strip() if transcript.strip() else "🔇 [No speech detected]"
+            
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+    
+    def get_status(self):
+        """Get current transcription status"""
+        if not self.active_provider:
+            return "❌ No transcription provider available"
+        
+        provider_info = self.providers[self.active_provider]
+        return f"✅ Using {provider_info['name']} - {provider_info['cost']} - {provider_info['speed']}"
+    
+    def get_available_providers(self):
+        """Get list of available providers for UI"""
+        return self.providers
 
 class KeywordMatcher:
     """Handle keyword detection"""
@@ -337,8 +367,6 @@ class RadioMonitor:
                 current_time = datetime.now().strftime('%H:%M:%S')
                 log_entry = f"[{current_time}] Starting poll for {len(st.session_state.selected_channels)} groups: {', '.join(st.session_state.selected_channels)}"
                 
-                if 'monitor_log' not in st.session_state:
-                    st.session_state.monitor_log = []
                 st.session_state.monitor_log.append(log_entry)
                 
                 # Keep only last 50 log entries
@@ -361,7 +389,7 @@ class RadioMonitor:
                             break
                         
                         try:
-                            log_entry = f"[{current_time}] Processing call {i+1}/{len(calls)}: {call.get('id', 'Unknown')}"
+                            log_entry = f"[{current_time}] Processing call {i+1}/{len(calls)}: {call.get('ts', 'Unknown')}"
                             st.session_state.monitor_log.append(log_entry)
                             
                             self.process_call(call)
@@ -378,8 +406,6 @@ class RadioMonitor:
             
             except Exception as e:
                 error_log = f"[{datetime.now().strftime('%H:%M:%S')}] MONITOR ERROR: {e}"
-                if 'monitor_log' not in st.session_state:
-                    st.session_state.monitor_log = []
                 st.session_state.monitor_log.append(error_log)
                 time.sleep(10)
     
@@ -387,16 +413,14 @@ class RadioMonitor:
         """Process individual call with enhanced logging"""
         try:
             group_id = call.get('groupId')
-            call_id = call.get('ts', 'Unknown')  # Use timestamp as ID since no 'id' field
+            call_id = call.get('ts', 'Unknown')
             timestamp = datetime.fromtimestamp(call.get('ts', time.time())).strftime('%Y-%m-%d %H:%M:%S')
-            audio_url = call.get('url')  # Changed from 'audioUrl' to 'url'
+            audio_url = call.get('url')  # Fixed field name
             duration = call.get('duration', 0)
             
             # Log call processing with more details
             current_time = datetime.now().strftime('%H:%M:%S')
             log_entry = f"[{current_time}] 📞 Call Details: ID={call_id}, Group={group_id}, Duration={duration}s"
-            if 'monitor_log' not in st.session_state:
-                st.session_state.monitor_log = []
             st.session_state.monitor_log.append(log_entry)
             
             channel_name = st.session_state.discovered_channels.get(group_id, f"Group {group_id}")
@@ -410,7 +434,7 @@ class RadioMonitor:
                 'duration': duration,
                 'transcript': '',
                 'keywords_found': [],
-                'raw_call_data': call  # Store raw call data for debugging
+                'raw_call_data': call
             }
             
             if audio_url:
@@ -432,9 +456,6 @@ class RadioMonitor:
                 st.session_state.monitor_log.append(log_entry)
             
             # Add transcript to session state
-            if 'transcripts' not in st.session_state:
-                st.session_state.transcripts = []
-            
             st.session_state.transcripts.append(transcript_data)
             
             # Keep only last 100 transcripts
@@ -448,8 +469,6 @@ class RadioMonitor:
             
         except Exception as e:
             error_log = f"[{datetime.now().strftime('%H:%M:%S')}] Call processing error: {e}"
-            if 'monitor_log' not in st.session_state:
-                st.session_state.monitor_log = []
             st.session_state.monitor_log.append(error_log)
 
 # Initialize session state
@@ -519,7 +538,7 @@ def create_discovery_interface():
     st.info("Click to add an example group (may or may not be active):")
     
     popular_groups = [
-        ("4390-2797", "Example: From system URL format"),
+        ("4390-2797", "Example: Anderson County Fire"),
         ("100-22361", "Example: Police Dispatch"), 
         ("c-154430", "Example: Conventional Channel"),
     ]
@@ -531,55 +550,6 @@ def create_discovery_interface():
                 st.session_state.discovered_channels[group_id] = description
                 st.success(f"Added {group_id}")
                 st.rerun()
-    
-    st.markdown("---")
-    
-    # Test live calls endpoint
-    st.subheader("🔧 Test Live Calls API")
-    if st.button("🧪 Test Live Calls Endpoint"):
-        with st.spinner("Testing live calls API..."):
-            if st.session_state.discovered_channels:
-                # Test with first group
-                test_group = list(st.session_state.discovered_channels.keys())[0]
-                calls, last_pos = monitor.api.get_live_calls([test_group])
-                
-                if calls is not None:
-                    st.success(f"✅ Live calls API working! Found {len(calls)} recent calls for {test_group}")
-                    if calls:
-                        st.json(calls[0])  # Show first call structure
-                else:
-                    st.error("❌ Live calls API test failed")
-            else:
-                st.warning("Add some groups first to test")
-    
-    st.markdown("---")
-    
-    # Instructions for finding groups
-    with st.expander("📖 How to Find Active Groups"):
-        st.markdown("""
-        **Method 1: Browse Broadcastify Calls Coverage**
-        1. Go to **[Broadcastify Calls Coverage](https://www.broadcastify.com/calls/coverage/)**
-        2. **Find your area** on the map or list
-        3. **Click on a system** that shows recent call activity
-        4. **Look for talkgroup IDs** in the system details
-        5. **Format as** `system-talkgroup` (e.g., `4390-2797`)
-        
-        **Method 2: RadioReference Database**
-        1. Go to [radioreference.com](https://radioreference.com)
-        2. Browse by location → Find your local systems
-        3. Look for talkgroup IDs 
-        4. Format as `system-talkgroup` (e.g., `100-22361`)
-        
-        **Group ID Formats:**
-        - **Trunked**: `{system_id}-{talkgroup_id}` (e.g., `4390-2797`)
-        - **Conventional**: `c-{frequency_id}` (e.g., `c-223312`)
-        
-        **⚠️ Important Notes:**
-        - Groups must have **recent call activity** to show calls
-        - Some groups may be **encrypted** (won't work)
-        - **Test with active groups** that you can see calls for on the coverage page
-        - Look for systems with green indicators showing recent activity
-        """)
 
 def create_channel_selection():
     """Create group selection interface"""
@@ -665,7 +635,6 @@ def create_monitoring_dashboard():
         st.metric("Calls Processed", st.session_state.monitor_stats["calls_processed"])
     
     with col4:
-        # Add last activity timestamp
         last_activity = st.session_state.get('last_activity', 'Never')
         st.metric("Last Activity", last_activity)
     
@@ -736,7 +705,7 @@ def create_monitoring_dashboard():
                 st.rerun()
         
         # Show detailed monitoring activity log
-        if 'monitor_log' in st.session_state and st.session_state.monitor_log:
+        if st.session_state.monitor_log:
             st.subheader("📋 Recent Monitoring Activity (Detailed)")
             
             # Show last 20 log entries
@@ -756,32 +725,13 @@ def create_monitoring_dashboard():
         # Auto-refresh for live updates
         time.sleep(3)
         st.rerun()
-    
-    # Instructions
-    with st.expander("📖 How Live Call Monitoring Works"):
-        st.markdown("""
-        **How it works:**
-        1. **Polls** the Broadcastify Calls API every 5 seconds
-        2. **Gets new calls** from your selected groups  
-        3. **Downloads audio** files for each call
-        4. **Transcribes** audio using OpenAI Whisper (if API key added)
-        5. **Searches** transcripts for your keywords
-        6. **Logs everything** in the activity log above
-        
-        **Debugging Tips:**
-        - **Watch the Activity Log** - it shows exactly what's happening
-        - Use "Test API Call Now" to verify the API is responding
-        - Check if your groups have recent activity on the Broadcastify website
-        - Look for calls in the Transcripts tab
-        - If no calls appear, try different group IDs from active systems
-        """)
 
 def start_monitoring():
     """Start monitoring in background thread"""
     if not st.session_state.monitor_running:
         st.session_state.monitor_running = True
         st.session_state.stop_event = threading.Event()
-        st.session_state.monitor_log = []  # Initialize monitoring log
+        st.session_state.monitor_log = []
         
         def monitor_worker():
             monitor.monitor_loop(st.session_state.stop_event)
@@ -863,39 +813,6 @@ def create_transcript_viewer():
         time.sleep(3)
         st.rerun()
 
-def create_api_test():
-    """Test API connectivity"""
-    st.subheader("🔧 API Connection Test")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("Test Authentication"):
-            with st.spinner("Testing authentication..."):
-                # Test basic JWT generation
-                jwt_token = monitor.api.generate_jwt()
-                if jwt_token:
-                    st.success("✅ JWT generation successful")
-                    
-                    # Test user authentication
-                    if monitor.api.authenticate_user():
-                        st.success("✅ User authentication successful")
-                        st.success(f"User ID: {st.session_state.user_id}")
-                        st.success(f"Token expires: {datetime.fromtimestamp(time.time() + 3600)}")
-                    else:
-                        st.error("❌ User authentication failed")
-                else:
-                    st.error("❌ JWT generation failed")
-    
-    with col2:
-        if st.button("🔍 Test Live Calls API"):
-            with st.spinner("Testing live calls endpoint..."):
-                success, message = monitor.api.test_live_calls_api()
-                if success:
-                    st.success(f"✅ {message}")
-                else:
-                    st.error(f"❌ {message}")
-
 def create_settings_page():
     """Create settings page"""
     st.header("⚙️ Settings & Configuration")
@@ -908,23 +825,6 @@ def create_settings_page():
     st.session_state.username = st.text_input("Username", value=st.session_state.username)
     st.session_state.password = st.text_input("Password", type="password", value=st.session_state.password)
     
-    # Add API testing
-    create_api_test()
-    
-    st.markdown("---")
-    st.subheader("Keywords")
-    
-    keywords_text = st.text_area(
-        "Keywords (one per line)",
-        value="\n".join(st.session_state.keywords),
-        height=150
-    )
-    
-    if st.button("💾 Save Keywords"):
-        keyword_list = [kw.strip().lower() for kw in keywords_text.split('\n') if kw.strip()]
-        st.session_state.keywords = keyword_list
-        st.success(f"Saved {len(keyword_list)} keywords")
-    
     st.markdown("---")
     st.subheader("🎤 Transcription Configuration")
     
@@ -935,50 +835,8 @@ def create_settings_page():
     else:
         st.warning(status)
     
-    # Provider selection
-    st.subheader("📡 Choose Transcription Provider")
-    
-    available_providers = monitor.transcriber.get_available_providers()
-    
-    # Show provider options with details
-    provider_options = []
-    provider_details = {}
-    
-    if ASSEMBLYAI_AVAILABLE and st.session_state.get('assemblyai_api_key'):
-        provider_options.append('assemblyai')
-        provider_details['assemblyai'] = "AssemblyAI - Fast & Affordable ($0.37/hour)"
-    
-    if OPENAI_AVAILABLE and st.session_state.get('openai_api_key'):
-        provider_options.append('openai')
-        provider_details['openai'] = "OpenAI Whisper API - High Quality ($0.36/hour)"
-    
-    if LOCAL_WHISPER_AVAILABLE:
-        device = "GPU" if torch.cuda.is_available() else "CPU"
-        provider_options.append('local_whisper')
-        provider_details['local_whisper'] = f"Local Whisper - Free ({device})"
-    
-    if provider_options:
-        current_provider = st.session_state.get('transcription_provider', 'assemblyai')
-        
-        selected_provider = st.selectbox(
-            "Active Provider",
-            options=provider_options,
-            index=provider_options.index(current_provider) if current_provider in provider_options else 0,
-            format_func=lambda x: provider_details[x]
-        )
-        
-        if selected_provider != st.session_state.get('transcription_provider'):
-            st.session_state.transcription_provider = selected_provider
-            monitor.transcriber = MultiTranscriber()  # Reinitialize
-            st.success(f"Switched to {provider_details[selected_provider]}")
-            st.rerun()
-    
-    # Provider configuration sections
-    st.markdown("---")
-    st.subheader("🔧 Provider Configuration")
-    
     # AssemblyAI Configuration
-    with st.expander("🎯 AssemblyAI Configuration (Recommended)", expanded=not available_providers.get('assemblyai')):
+    with st.expander("🎯 AssemblyAI Configuration (Recommended)", expanded=True):
         st.markdown("""
         **AssemblyAI Benefits:**
         - ✅ **Direct URL processing** (no file downloads needed)
@@ -994,29 +852,17 @@ def create_settings_page():
             help="Get your free API key from https://www.assemblyai.com/"
         )
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("💾 Save AssemblyAI Key"):
-                st.session_state.assemblyai_api_key = assemblyai_key
-                monitor.transcriber = MultiTranscriber()
-                if assemblyai_key:
-                    st.success("✅ AssemblyAI API key saved!")
-                else:
-                    st.info("AssemblyAI key cleared.")
-        
-        with col2:
-            if not assemblyai_key:
-                st.info("Get a free API key at: https://www.assemblyai.com/")
+        if st.button("💾 Save AssemblyAI Key"):
+            st.session_state.assemblyai_api_key = assemblyai_key
+            monitor.transcriber = MultiTranscriber()
+            if assemblyai_key:
+                st.success("✅ AssemblyAI API key saved!")
+            else:
+                st.info("AssemblyAI key cleared.")
+            st.rerun()
     
     # OpenAI Configuration  
-    with st.expander("🤖 OpenAI Configuration", expanded=False):
-        st.markdown("""
-        **OpenAI Whisper API:**
-        - ✅ **High accuracy** 
-        - ⚠️ **Requires file upload** (slower)
-        - 💰 **$0.36/hour** of audio
-        """)
-        
+    with st.expander("🤖 OpenAI Configuration (Alternative)", expanded=False):
         openai_key = st.text_input(
             "OpenAI API Key",
             type="password", 
@@ -1031,58 +877,19 @@ def create_settings_page():
                 st.success("✅ OpenAI API key saved!")
             else:
                 st.info("OpenAI key cleared.")
-    
-    # Local Whisper Configuration
-    with st.expander("💻 Local Whisper Configuration", expanded=False):
-        if LOCAL_WHISPER_AVAILABLE:
-            device = "GPU (Fast)" if torch.cuda.is_available() else "CPU (Slow)"
-            st.success(f"✅ Local Whisper installed - Running on {device}")
-            st.markdown("""
-            **Local Whisper Benefits:**
-            - ✅ **Completely free**
-            - ✅ **No API limits**
-            - ✅ **Privacy** (no data sent to external services)
-            """)
-        else:
-            st.warning("❌ Local Whisper not installed")
-            st.markdown("""
-            **Install in Colab:**
-            ```python
-            !pip install openai-whisper torch
-            
-            # Restart runtime after installation
-            import os
-            os.kill(os.getpid(), 9)
-            ```
-            """)
-    
-    # Quick setup for Colab
-    if not any([ASSEMBLYAI_AVAILABLE, LOCAL_WHISPER_AVAILABLE]):
-        st.markdown("---")
-        st.subheader("🚀 Quick Setup for Colab")
-        st.info("Install packages to get started:")
-        
-        setup_code = '''
-# Install all transcription options in Colab:
-!pip install assemblyai openai-whisper torch
-
-# Restart runtime:
-import os
-os.kill(os.getpid(), 9)
-        '''
-        st.code(setup_code, language="python")
+            st.rerun()
     
     # Test transcription
     st.markdown("---")
     st.subheader("🧪 Test Transcription")
     
-    if available_providers:
+    if monitor.transcriber.get_available_providers():
         if st.button("Test Current Provider"):
             # Use one of the recent call URLs if available
             test_calls = st.session_state.get('transcripts', [])
             if test_calls and test_calls[-1].get('raw_call_data', {}).get('url'):
                 test_url = test_calls[-1]['raw_call_data']['url']
-                with st.spinner(f"Testing {provider_details.get(monitor.transcriber.active_provider, 'transcription')}..."):
+                with st.spinner("Testing transcription..."):
                     result = monitor.transcriber.transcribe_call(test_url)
                     st.write("**Transcription Result:**")
                     st.text_area("Result", value=result, height=100, key="test_result")
@@ -1090,6 +897,20 @@ os.kill(os.getpid(), 9)
                 st.warning("No recent audio URLs available. Start monitoring first to get test audio.")
     else:
         st.info("Configure at least one transcription provider to test.")
+    
+    st.markdown("---")
+    st.subheader("Keywords")
+    
+    keywords_text = st.text_area(
+        "Keywords (one per line)",
+        value="\n".join(st.session_state.keywords),
+        height=150
+    )
+    
+    if st.button("💾 Save Keywords"):
+        keyword_list = [kw.strip().lower() for kw in keywords_text.split('\n') if kw.strip()]
+        st.session_state.keywords = keyword_list
+        st.success(f"Saved {len(keyword_list)} keywords")
 
 # ===================================================================
 # MAIN APPLICATION
@@ -1118,8 +939,7 @@ def main():
         if hasattr(monitor.transcriber, 'active_provider') and monitor.transcriber.active_provider:
             provider_name = {
                 'assemblyai': 'AssemblyAI',
-                'openai': 'OpenAI',
-                'local_whisper': 'Local Whisper'
+                'openai': 'OpenAI'
             }.get(monitor.transcriber.active_provider, 'Unknown')
             st.metric("Transcription", provider_name)
         else:
