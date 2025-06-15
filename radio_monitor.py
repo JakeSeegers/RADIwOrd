@@ -246,14 +246,38 @@ class RadioMonitor:
         self.last_pos = None
     
     def monitor_loop(self, stop_event):
-        """Main monitoring loop"""
+        """Main monitoring loop with debugging"""
         while not stop_event.is_set():
             try:
                 if not st.session_state.selected_channels:
                     time.sleep(5)
                     continue
                 
+                # Add to monitoring log
+                current_time = datetime.now().strftime('%H:%M:%S')
+                log_entry = f"[{current_time}] Polling API for {len(st.session_state.selected_channels)} groups..."
+                
+                if 'monitor_log' not in st.session_state:
+                    st.session_state.monitor_log = []
+                st.session_state.monitor_log.append(log_entry)
+                
+                # Keep only last 20 log entries
+                if len(st.session_state.monitor_log) > 20:
+                    st.session_state.monitor_log = st.session_state.monitor_log[-20:]
+                
+                # Get live calls
                 calls, self.last_pos = self.api.get_live_calls(st.session_state.selected_channels, self.last_pos)
+                
+                # Log API response
+                log_entry = f"[{current_time}] API returned {len(calls) if calls else 0} calls"
+                st.session_state.monitor_log.append(log_entry)
+                
+                # Update last activity
+                st.session_state.last_activity = current_time
+                
+                if calls:
+                    log_entry = f"[{current_time}] Processing {len(calls)} new calls..."
+                    st.session_state.monitor_log.append(log_entry)
                 
                 for call in calls:
                     if stop_event.is_set():
@@ -265,15 +289,25 @@ class RadioMonitor:
                 time.sleep(st.session_state.poll_interval)
             
             except Exception as e:
-                st.error(f"Monitor loop error: {e}")
+                error_log = f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: {e}"
+                if 'monitor_log' not in st.session_state:
+                    st.session_state.monitor_log = []
+                st.session_state.monitor_log.append(error_log)
                 time.sleep(10)
     
     def process_call(self, call):
-        """Process individual call"""
+        """Process individual call with logging"""
         try:
             group_id = call.get('groupId')
             timestamp = datetime.fromtimestamp(call.get('ts', time.time())).strftime('%Y-%m-%d %H:%M:%S')
             audio_url = call.get('audioUrl')
+            
+            # Log call processing
+            current_time = datetime.now().strftime('%H:%M:%S')
+            log_entry = f"[{current_time}] Processing call from {group_id}"
+            if 'monitor_log' not in st.session_state:
+                st.session_state.monitor_log = []
+            st.session_state.monitor_log.append(log_entry)
             
             channel_name = st.session_state.discovered_channels.get(group_id, f"Group {group_id}")
             
@@ -295,6 +329,8 @@ class RadioMonitor:
                 
                 if keywords_found:
                     st.session_state.monitor_stats["keywords_found"] += 1
+                    log_entry = f"[{current_time}] 🚨 KEYWORDS FOUND: {', '.join(keywords_found)}"
+                    st.session_state.monitor_log.append(log_entry)
             
             st.session_state.transcripts.append(transcript_data)
             
@@ -302,9 +338,12 @@ class RadioMonitor:
                 st.session_state.transcripts = st.session_state.transcripts[-100:]
             
             st.session_state.monitor_stats["calls_processed"] += 1
-        
+            
         except Exception as e:
-            st.error(f"Call processing error: {e}")
+            error_log = f"[{datetime.now().strftime('%H:%M:%S')}] Call processing error: {e}"
+            if 'monitor_log' not in st.session_state:
+                st.session_state.monitor_log = []
+            st.session_state.monitor_log.append(error_log)
 
 # Initialize session state
 init_session_state()
@@ -334,24 +373,28 @@ def create_discovery_interface():
     st.subheader("➕ Add Radio Groups to Monitor")
     st.markdown("""
     **How to find Group IDs:**
-    - Go to [broadcastify.com](https://broadcastify.com) 
-    - Browse to your area → Find active radio traffic
-    - Look for URLs like `broadcastify.com/calls/tg/100/22361`
-    - The Group ID is `100-22361` (format: `system-talkgroup`)
+    1. Go to **[📻 Broadcastify Browse](https://www.broadcastify.com/listen/)** 
+    2. **Navigate**: State → County → Radio Category (EMS, Fire, etc.) → Specific Dispatch Channel
+    3. **Click "Listen Live"** 
+    4. **Copy Group ID** from URL like `broadcastify.com/calls/tg/4390/2797`
+    5. **Format as** `4390-2797` (system-talkgroup)
     """)
+    
+    # Add direct link
+    st.info("🔗 **[Click here to browse for active radio channels](https://www.broadcastify.com/listen/)**")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
         manual_id = st.text_input(
             "Group ID", 
-            placeholder="e.g., 100-22361 or c-223312",
+            placeholder="e.g., 4390-2797 or c-223312",
             help="Format: system-talkgroup for trunked, c-frequency for conventional"
         )
     with col2:
         manual_name = st.text_input(
             "Description", 
-            placeholder="e.g., Ann Arbor DPSS Dispatch"
+            placeholder="e.g., County Fire Dispatch"
         )
     with col3:
         if st.button("➕ Add Group"):
@@ -365,14 +408,13 @@ def create_discovery_interface():
     st.markdown("---")
     
     # Quick examples
-    st.subheader("🚀 Popular Group Examples")
-    st.info("Click to add some popular groups (these may or may not be active):")
+    st.subheader("🚀 Example Group Format")
+    st.info("Click to add an example group (may or may not be active):")
     
     popular_groups = [
-        ("100-22361", "Example: Police Dispatch"),
-        ("200-15432", "Example: Fire Department"), 
+        ("4390-2797", "Example: From browse URL format"),
+        ("100-22361", "Example: Police Dispatch"), 
         ("c-154430", "Example: Conventional Channel"),
-        ("7017-6040271", "Example: Another System")
     ]
     
     cols = st.columns(len(popular_groups))
@@ -409,11 +451,11 @@ def create_discovery_interface():
     with st.expander("📖 How to Find Active Groups"):
         st.markdown("""
         **Method 1: Browse Broadcastify Website**
-        1. Go to [broadcastify.com](https://broadcastify.com)
-        2. Click "Calls" in the menu
-        3. Browse by location to find your area
-        4. Look for active groups with recent calls
-        5. Copy the Group ID from the URL
+        1. Go to **[Broadcastify Browse](https://www.broadcastify.com/listen/)**
+        2. **Navigate**: State → County → Radio Category (EMS, Fire, etc.) → Specific Dispatch Channel
+        3. **Click "Listen Live"** 
+        4. **Look for URL** like `https://www.broadcastify.com/calls/tg/4390/2797`
+        5. **Extract Group ID**: `4390-2797` (format: `system-talkgroup`)
         
         **Method 2: RadioReference Database**
         1. Go to [radioreference.com](https://radioreference.com)
@@ -422,8 +464,13 @@ def create_discovery_interface():
         4. Format as `system-talkgroup` (e.g., `100-22361`)
         
         **Group ID Formats:**
-        - **Trunked**: `{system_id}-{talkgroup_id}` (e.g., `100-22361`)
+        - **Trunked**: `{system_id}-{talkgroup_id}` (e.g., `4390-2797`)
         - **Conventional**: `c-{frequency_id}` (e.g., `c-223312`)
+        
+        **⚠️ Important Notes:**
+        - Groups must have **recent activity** to show calls
+        - Some groups may be **encrypted** (won't work)
+        - **Test with active groups** that you can see calls on the website
         """)
 
 def create_channel_selection():
@@ -497,7 +544,7 @@ def create_monitoring_dashboard():
     st.header("📻 Live Call Monitor")
     
     # Status indicators
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         status = "🟢 RUNNING" if st.session_state.monitor_running else "🔴 STOPPED"
@@ -508,6 +555,11 @@ def create_monitoring_dashboard():
     
     with col3:
         st.metric("Calls Processed", st.session_state.monitor_stats["calls_processed"])
+    
+    with col4:
+        # Add last activity timestamp
+        last_activity = st.session_state.get('last_activity', 'Never')
+        st.metric("Last Activity", last_activity)
     
     # Show monitoring info
     if st.session_state.selected_channels:
@@ -537,9 +589,50 @@ def create_monitoring_dashboard():
             st.info("Monitoring stopped")
             st.rerun()
     
-    # Show monitoring stats
+    # Add debugging section
     if st.session_state.monitor_running:
-        st.info("📡 Monitoring live calls... Check Transcripts tab for results.")
+        st.markdown("---")
+        st.subheader("🔍 Live Debugging")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🧪 Test API Call Now"):
+                with st.spinner("Testing live API call..."):
+                    if st.session_state.selected_channels:
+                        test_group = st.session_state.selected_channels[0]
+                        calls, last_pos = monitor.api.get_live_calls([test_group])
+                        
+                        st.write(f"**Testing group:** {test_group}")
+                        st.write(f"**API Response:** {len(calls) if calls else 0} calls")
+                        st.write(f"**Last Position:** {last_pos}")
+                        
+                        if calls:
+                            st.success(f"✅ Got {len(calls)} calls!")
+                            with st.expander("Show Raw Call Data"):
+                                st.json(calls[0])
+                        else:
+                            st.info("ℹ️ No new calls (this is normal if no recent activity)")
+        
+        with col2:
+            # Show real-time stats
+            st.write("**Real-time Stats:**")
+            st.write(f"• Monitoring: {st.session_state.monitor_running}")
+            st.write(f"• Groups: {len(st.session_state.selected_channels)}")
+            st.write(f"• Poll interval: {st.session_state.poll_interval}s")
+            st.write(f"• Total transcripts: {len(st.session_state.get('transcripts', []))}")
+            
+            # Add manual refresh
+            if st.button("🔄 Refresh Stats"):
+                st.rerun()
+        
+        # Show monitoring activity log
+        if 'monitor_log' in st.session_state and st.session_state.monitor_log:
+            with st.expander("📋 Recent Monitoring Activity"):
+                for log_entry in st.session_state.monitor_log[-10:]:
+                    st.text(log_entry)
+        
+        st.info("📡 Monitoring active - polls API every 5 seconds. Check Transcripts tab for results.")
         
         # Auto-refresh for live updates
         time.sleep(3)
@@ -556,11 +649,11 @@ def create_monitoring_dashboard():
         5. **Searches** transcripts for your keywords
         6. **Sends email alerts** when keywords are found
         
-        **What you'll see:**
-        - Live calls appearing in the Transcripts tab
-        - Keyword matches highlighted in red
-        - Email notifications (if configured)
-        - Audio links to listen to original calls
+        **Debugging Tips:**
+        - Use "Test API Call Now" to verify the API is responding
+        - Check the "Recent Monitoring Activity" log
+        - Look for calls in the Transcripts tab
+        - If no calls appear, the groups might not have recent activity
         """)
 
 def start_monitoring():
@@ -568,6 +661,7 @@ def start_monitoring():
     if not st.session_state.monitor_running:
         st.session_state.monitor_running = True
         st.session_state.stop_event = threading.Event()
+        st.session_state.monitor_log = []  # Initialize monitoring log
         
         def monitor_worker():
             monitor.monitor_loop(st.session_state.stop_event)
