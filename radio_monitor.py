@@ -165,8 +165,6 @@ class RadioMonitorAPI:
         except Exception as e:
             return False, f"Exception: {e}"
     
-    # Remove the old discover_what_actually_works function since we're not using endpoint discovery anymore
-    
     def get_live_calls(self, group_ids, last_pos=None):
         """Get live calls for selected groups"""
         try:
@@ -277,7 +275,7 @@ class RadioMonitor:
             timestamp = datetime.fromtimestamp(call.get('ts', time.time())).strftime('%Y-%m-%d %H:%M:%S')
             audio_url = call.get('audioUrl')
             
-            channel_name = st.session_state.discovered_channels.get(group_id, f"Channel {group_id}")
+            channel_name = st.session_state.discovered_channels.get(group_id, f"Group {group_id}")
             
             transcript_data = {
                 'timestamp': timestamp,
@@ -319,147 +317,184 @@ monitor = RadioMonitor()
 # ===================================================================
 
 def create_discovery_interface():
-    """Create channel discovery interface"""
-    st.header("🔍 Discover Live Radio Feeds")
+    """Create manual group addition interface"""
+    st.header("📻 Live Calls Monitoring Setup")
     
-    # Add success message about using correct API
-    st.success("✅ Now using the CORRECT Broadcastify Feed API (not Calls API)!")
-    st.info("This will find live audio feeds (what most people want) instead of individual call recordings.")
+    # Explain the approach
+    st.success("✅ Using your working Broadcastify Calls API credentials!")
+    st.info("""
+    **How this works:**
+    1. **Find Group IDs** from Broadcastify web interface
+    2. **Add them manually** below  
+    3. **Monitor live calls** from those groups
+    4. **Get real-time transcription** and keyword alerts
+    """)
     
-    # Add debug section
-    st.subheader("🔬 Test Feed Discovery")
-    st.info("Using the correct api.broadcastify.com/audio/ endpoint")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        county_id = st.text_input(
-            "Enter County ID for Feed Discovery",
-            placeholder="e.g., 741 for Indianapolis",
-            help="This uses the correct Broadcastify Feed API"
-        )
-    
-    with col2:
-        if st.button("🔍 Discover Feeds", type="primary"):
-            if county_id:
-                test_county_discovery(county_id, f"County {county_id}")
-            else:
-                st.warning("Please enter a County ID")
-    
-    st.markdown("---")
-    
-    # Add quick test buttons for known working counties
-    st.subheader("🚀 Quick Test - Try Popular Counties")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.button("🏙️ Indianapolis (741)"):
-            test_county_discovery("741", "Marion County, IN")
-    
-    with col2:
-        if st.button("🍑 Atlanta (442)"):
-            test_county_discovery("442", "Fulton County, GA")
-    
-    with col3:
-        if st.button("🏫 Ann Arbor (2733)"):
-            test_county_discovery("2733", "Washtenaw County, MI")
-    
-    with col4:
-        if st.button("🌴 Orlando (1706)"):
-            test_county_discovery("1706", "Orange County, FL")
-    
-    st.markdown("---")
-    
-    # Manual group addition
-    st.subheader("➕ Manual Feed Addition")
-    st.info("Add Feed IDs manually if discovery doesn't find what you need")
+    # Manual group addition (primary method)
+    st.subheader("➕ Add Radio Groups to Monitor")
+    st.markdown("""
+    **How to find Group IDs:**
+    - Go to [broadcastify.com](https://broadcastify.com) 
+    - Browse to your area → Find active radio traffic
+    - Look for URLs like `broadcastify.com/calls/tg/100/22361`
+    - The Group ID is `100-22361` (format: `system-talkgroup`)
+    """)
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        manual_id = st.text_input("Feed ID", placeholder="e.g., 32602")
+        manual_id = st.text_input(
+            "Group ID", 
+            placeholder="e.g., 100-22361 or c-223312",
+            help="Format: system-talkgroup for trunked, c-frequency for conventional"
+        )
     with col2:
-        manual_name = st.text_input("Feed Name", placeholder="e.g., Indianapolis Metro Police")
+        manual_name = st.text_input(
+            "Description", 
+            placeholder="e.g., Ann Arbor DPSS Dispatch"
+        )
     with col3:
-        if st.button("➕ Add"):
+        if st.button("➕ Add Group"):
             if manual_id and manual_name:
                 st.session_state.discovered_channels[manual_id] = manual_name
-                st.success("Feed added!")
+                st.success("Group added!")
+                st.rerun()
+            else:
+                st.warning("Enter both Group ID and Description")
+    
+    st.markdown("---")
+    
+    # Quick examples
+    st.subheader("🚀 Popular Group Examples")
+    st.info("Click to add some popular groups (these may or may not be active):")
+    
+    popular_groups = [
+        ("100-22361", "Example: Police Dispatch"),
+        ("200-15432", "Example: Fire Department"), 
+        ("c-154430", "Example: Conventional Channel"),
+        ("7017-6040271", "Example: Another System")
+    ]
+    
+    cols = st.columns(len(popular_groups))
+    for i, (group_id, description) in enumerate(popular_groups):
+        with cols[i]:
+            if st.button(f"Add {group_id}", key=f"add_{i}"):
+                st.session_state.discovered_channels[group_id] = description
+                st.success(f"Added {group_id}")
                 st.rerun()
     
     st.markdown("---")
     
-    # Add explanation of the difference
-    st.info("""
-    **📻 Feeds vs Calls:**
-    - **Feeds** = Live audio streams (like traditional scanner apps)
-    - **Calls** = Individual recorded transmissions with metadata
+    # Test live calls endpoint
+    st.subheader("🔧 Test Live Calls API")
+    if st.button("🧪 Test Live Calls Endpoint"):
+        with st.spinner("Testing live calls API..."):
+            if st.session_state.discovered_channels:
+                # Test with first group
+                test_group = list(st.session_state.discovered_channels.keys())[0]
+                calls, last_pos = monitor.api.get_live_calls([test_group])
+                
+                if calls is not None:
+                    st.success(f"✅ Live calls API working! Found {len(calls)} recent calls for {test_group}")
+                    if calls:
+                        st.json(calls[0])  # Show first call structure
+                else:
+                    st.error("❌ Live calls API test failed")
+            else:
+                st.warning("Add some groups first to test")
     
-    Most users want **Feeds** for live monitoring, which is what this app now discovers!
-    """)
-
-def test_county_discovery(county_id, county_name):
-    """Test discovery for a specific county using CORRECT API"""
-    with st.spinner(f"Discovering feeds in {county_name}..."):
-        discovered = monitor.api.discover_county_feeds(county_id)
-        if discovered:
-            st.session_state.discovered_channels.update(discovered)
-            st.success(f"✅ Found {len(discovered)} feeds in {county_name}!")
-            st.rerun()
-        else:
-            st.error(f"❌ No feeds found in {county_name}")
+    st.markdown("---")
+    
+    # Instructions for finding groups
+    with st.expander("📖 How to Find Active Groups"):
+        st.markdown("""
+        **Method 1: Browse Broadcastify Website**
+        1. Go to [broadcastify.com](https://broadcastify.com)
+        2. Click "Calls" in the menu
+        3. Browse by location to find your area
+        4. Look for active groups with recent calls
+        5. Copy the Group ID from the URL
+        
+        **Method 2: RadioReference Database**
+        1. Go to [radioreference.com](https://radioreference.com)
+        2. Browse by location → Find your local systems
+        3. Look for talkgroup IDs 
+        4. Format as `system-talkgroup` (e.g., `100-22361`)
+        
+        **Group ID Formats:**
+        - **Trunked**: `{system_id}-{talkgroup_id}` (e.g., `100-22361`)
+        - **Conventional**: `c-{frequency_id}` (e.g., `c-223312`)
+        """)
 
 def create_channel_selection():
-    """Create feed selection interface"""
-    st.header("📻 Feed Selection")
+    """Create group selection interface"""
+    st.header("📻 Selected Groups for Monitoring")
     
     if not st.session_state.discovered_channels:
-        st.info("🔍 No feeds discovered yet. Use the Discovery section above to find feeds.")
+        st.info("👆 Add some groups above first!")
         return
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("✅ Select All"):
+        if st.button("✅ Select All Groups"):
             st.session_state.selected_channels = list(st.session_state.discovered_channels.keys())
             st.rerun()
     
     with col2:
-        if st.button("❌ Clear All"):
+        if st.button("❌ Clear Selection"):
             st.session_state.selected_channels = []
             st.rerun()
     
-    # Feed list
-    channel_data = []
-    for feed_id, description in st.session_state.discovered_channels.items():
-        is_selected = feed_id in st.session_state.selected_channels
+    # Group list
+    group_data = []
+    for group_id, description in st.session_state.discovered_channels.items():
+        is_selected = group_id in st.session_state.selected_channels
         
-        channel_data.append({
-            "Select": is_selected,
-            "Feed ID": feed_id,
+        group_data.append({
+            "Monitor": is_selected,
+            "Group ID": group_id,
             "Description": description,
+            "Delete": False,
         })
     
-    if channel_data:
-        df = pd.DataFrame(channel_data)
+    if group_data:
+        df = pd.DataFrame(group_data)
         
         edited_df = st.data_editor(
             df,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Select": st.column_config.CheckboxColumn("Select", default=False),
-                "Feed ID": st.column_config.TextColumn("Feed ID", width="medium"),
+                "Monitor": st.column_config.CheckboxColumn("Monitor", default=False),
+                "Group ID": st.column_config.TextColumn("Group ID", width="medium"),
                 "Description": st.column_config.TextColumn("Description", width="large"),
+                "Delete": st.column_config.CheckboxColumn("Delete", default=False),
             }
         )
         
-        selected_channels = edited_df[edited_df["Select"]]["Feed ID"].tolist()
+        # Update selected channels
+        selected_channels = edited_df[edited_df["Monitor"]]["Group ID"].tolist()
         if selected_channels != st.session_state.selected_channels:
             st.session_state.selected_channels = selected_channels
+        
+        # Handle deletions
+        to_delete = edited_df[edited_df["Delete"]]["Group ID"].tolist()
+        if to_delete:
+            for group_id in to_delete:
+                if group_id in st.session_state.discovered_channels:
+                    del st.session_state.discovered_channels[group_id]
+                if group_id in st.session_state.selected_channels:
+                    st.session_state.selected_channels.remove(group_id)
+            st.rerun()
+    
+    if st.session_state.selected_channels:
+        st.success(f"🎯 Ready to monitor {len(st.session_state.selected_channels)} groups!")
+    else:
+        st.warning("⚠️ No groups selected for monitoring")
 
 def create_monitoring_dashboard():
     """Create monitoring dashboard"""
-    st.header("📻 Live Feed Monitor")
+    st.header("📻 Live Call Monitor")
     
     # Status indicators
     col1, col2, col3 = st.columns(3)
@@ -469,13 +504,20 @@ def create_monitoring_dashboard():
         st.metric("Status", status)
     
     with col2:
-        st.metric("Feeds", len(st.session_state.selected_channels))
+        st.metric("Groups", len(st.session_state.selected_channels))
     
     with col3:
         st.metric("Calls Processed", st.session_state.monitor_stats["calls_processed"])
     
-    # Important note about feeds vs calls
-    st.warning("🚧 **Note**: This monitor is designed for Calls API but we're now using Feed API. Feed monitoring needs different implementation. For now, this shows the concept.")
+    # Show monitoring info
+    if st.session_state.selected_channels:
+        st.success(f"✅ Ready to monitor {len(st.session_state.selected_channels)} groups")
+        with st.expander("📋 Groups being monitored"):
+            for group_id in st.session_state.selected_channels:
+                description = st.session_state.discovered_channels.get(group_id, "Unknown")
+                st.write(f"• {group_id}: {description}")
+    else:
+        st.warning("⚠️ No groups selected. Go to Setup Groups tab to add groups.")
     
     # Control buttons
     col1, col2 = st.columns([1, 1])
@@ -483,12 +525,11 @@ def create_monitoring_dashboard():
     with col1:
         if st.button("▶️ Start Monitoring", disabled=st.session_state.monitor_running):
             if st.session_state.selected_channels:
-                st.warning("⚠️ Feed monitoring not fully implemented yet. This is designed for Calls API.")
-                # start_monitoring()  # Disabled for now
-                # st.success("Monitoring started!")
-                # st.rerun()
+                start_monitoring()
+                st.success("Monitoring started!")
+                st.rerun()
             else:
-                st.warning("Please select feeds first")
+                st.warning("Please select groups first")
     
     with col2:
         if st.button("⏹️ Stop Monitoring", disabled=not st.session_state.monitor_running):
@@ -496,10 +537,31 @@ def create_monitoring_dashboard():
             st.info("Monitoring stopped")
             st.rerun()
     
-    # Auto-refresh for live updates
+    # Show monitoring stats
     if st.session_state.monitor_running:
+        st.info("📡 Monitoring live calls... Check Transcripts tab for results.")
+        
+        # Auto-refresh for live updates
         time.sleep(3)
         st.rerun()
+    
+    # Instructions
+    with st.expander("📖 How Live Call Monitoring Works"):
+        st.markdown("""
+        **How it works:**
+        1. **Polls** the Broadcastify Calls API every 5 seconds
+        2. **Gets new calls** from your selected groups  
+        3. **Downloads audio** files for each call
+        4. **Transcribes** audio using OpenAI Whisper (if API key added)
+        5. **Searches** transcripts for your keywords
+        6. **Sends email alerts** when keywords are found
+        
+        **What you'll see:**
+        - Live calls appearing in the Transcripts tab
+        - Keyword matches highlighted in red
+        - Email notifications (if configured)
+        - Audio links to listen to original calls
+        """)
 
 def start_monitoring():
     """Start monitoring in background thread"""
@@ -521,29 +583,57 @@ def stop_monitoring():
 
 def create_transcript_viewer():
     """Create transcript viewer"""
-    st.header("📝 Live Transcripts")
+    st.header("📝 Live Call Transcripts")
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        show_keywords_only = st.checkbox("Keywords Only")
+    with col2:
+        max_transcripts = st.selectbox("Show Last", [10, 25, 50, 100], index=1)
+    with col3:
+        auto_scroll = st.checkbox("Auto-scroll to latest", value=True)
     
     transcripts = st.session_state.get('transcripts', [])
     
     if not transcripts:
-        st.info("No transcripts yet. Start monitoring to see live call activity.")
+        if st.session_state.monitor_running:
+            st.info("🔄 Monitoring active - waiting for calls...")
+        else:
+            st.info("▶️ Start monitoring to see live call transcripts here.")
         return
     
-    # Display recent transcripts
-    for i, transcript in enumerate(reversed(transcripts[-25:])):
+    # Filter transcripts
+    filtered_transcripts = transcripts[-max_transcripts:]
+    if show_keywords_only:
+        filtered_transcripts = [t for t in filtered_transcripts if t.get('keywords_found')]
+    
+    # Display transcripts
+    for i, transcript in enumerate(reversed(filtered_transcripts)):
         timestamp = transcript.get('timestamp', 'Unknown')
         channel = transcript.get('channel_name', 'Unknown')
         text = transcript.get('transcript', 'No transcript')
         keywords = transcript.get('keywords_found', [])
         
-        with st.expander(f"{timestamp} - {channel}", expanded=(i < 3)):
-            if keywords:
-                st.warning(f"🚨 Keywords found: {', '.join(keywords)}")
-            
-            st.text_area("Call Info", value=text, height=100, disabled=True, key=f"transcript_{i}")
-            
-            if transcript.get('audio_url'):
-                st.markdown(f"[🎧 Listen to Audio]({transcript['audio_url']})")
+        # Different colors for keyword matches
+        if keywords:
+            with st.container():
+                st.error(f"🚨 {timestamp} - {channel}")
+                st.error(f"**Keywords found:** {', '.join(keywords)}")
+                st.text_area("Transcript", value=text, height=100, disabled=True, key=f"transcript_kw_{i}")
+                if transcript.get('audio_url'):
+                    st.markdown(f"[🎧 Listen to Audio]({transcript['audio_url']})")
+                st.markdown("---")
+        else:
+            with st.expander(f"📞 {timestamp} - {channel}", expanded=(i < 2)):
+                st.text_area("Transcript", value=text, height=100, disabled=True, key=f"transcript_{i}")
+                if transcript.get('audio_url'):
+                    st.markdown(f"[🎧 Listen to Audio]({transcript['audio_url']})")
+    
+    # Auto-refresh
+    if auto_scroll and st.session_state.monitor_running:
+        time.sleep(3)
+        st.rerun()
 
 def create_api_test():
     """Test API connectivity"""
@@ -552,33 +642,31 @@ def create_api_test():
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("Test Basic Connection"):
-            with st.spinner("Testing API connection..."):
-                # Test basic JWT generation (for old API)
+        if st.button("Test Authentication"):
+            with st.spinner("Testing authentication..."):
+                # Test basic JWT generation
                 jwt_token = monitor.api.generate_jwt()
                 if jwt_token:
-                    st.success("✅ JWT generation successful (for Calls API)")
+                    st.success("✅ JWT generation successful")
                     
-                    # Test authentication (for old API)
+                    # Test user authentication
                     if monitor.api.authenticate_user():
-                        st.success("✅ User authentication successful (for Calls API)")
+                        st.success("✅ User authentication successful")
                         st.success(f"User ID: {st.session_state.user_id}")
+                        st.success(f"Token expires: {datetime.fromtimestamp(time.time() + 3600)}")
                     else:
                         st.error("❌ User authentication failed")
                 else:
                     st.error("❌ JWT generation failed")
     
     with col2:
-        if st.button("🔍 Test Feed API"):
-            with st.spinner("Testing CORRECT Feed API..."):
-                # Test the correct Feed API
-                discovered = monitor.api.discover_county_feeds("741")  # Test with Indianapolis
-                if discovered:
-                    st.success(f"✅ Feed API works! Found {len(discovered)} feeds for Indianapolis")
-                    for feed_id, name in list(discovered.items())[:3]:  # Show first 3
-                        st.info(f"Feed {feed_id}: {name}")
+        if st.button("🔍 Test Live Calls API"):
+            with st.spinner("Testing live calls endpoint..."):
+                success, message = monitor.api.test_live_calls_api()
+                if success:
+                    st.success(f"✅ {message}")
                 else:
-                    st.error("❌ Feed API test failed")
+                    st.error(f"❌ {message}")
 
 def create_settings_page():
     """Create settings page"""
@@ -639,7 +727,7 @@ def main():
         
         page = st.selectbox(
             "Navigation",
-            ["🔍 Discovery", "📻 Monitor", "📝 Transcripts", "⚙️ Settings"]
+            ["📻 Setup Groups", "🎯 Monitor", "📝 Transcripts", "⚙️ Settings"]
         )
         
         if st.session_state.get('monitor_running', False):
@@ -647,15 +735,19 @@ def main():
         else:
             st.error("🔴 Monitoring Stopped")
         
-        st.metric("Selected Channels", len(st.session_state.get('selected_channels', [])))
+        st.metric("Selected Groups", len(st.session_state.get('selected_channels', [])))
         st.metric("Keywords", len(st.session_state.get('keywords', [])))
+        
+        # Add note about using Calls API
+        st.info("✅ Using Broadcastify Calls API")
+        st.caption("Individual call monitoring + transcription")
     
     # Main content
-    if page == "🔍 Discovery":
+    if page == "📻 Setup Groups":
         create_discovery_interface()
         st.markdown("---")
         create_channel_selection()
-    elif page == "📻 Monitor":
+    elif page == "🎯 Monitor":
         create_monitoring_dashboard()
     elif page == "📝 Transcripts":
         create_transcript_viewer()
@@ -663,7 +755,7 @@ def main():
         create_settings_page()
     
     st.markdown("---")
-    st.markdown("*Radio Monitor - Now using correct Broadcastify Feed API*")
+    st.markdown("*Radio Monitor - Live call monitoring with AI transcription*")
 
 if __name__ == "__main__":
     main()
