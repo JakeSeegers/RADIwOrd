@@ -240,12 +240,44 @@ class SimpleTranscriber:
                 st.error(f"OpenAI client setup error: {e}")
     
     def transcribe_call(self, audio_url):
-        """Simple transcription placeholder"""
+        """Transcribe audio using OpenAI Whisper"""
         if not self.client:
             return "📞 Radio call captured - Add OpenAI API key for transcription"
         
-        # For now, return a placeholder - real transcription would download and process audio
-        return f"📞 Call captured from {audio_url[:30]}... - [Transcription with OpenAI coming soon]"
+        try:
+            # Download audio file
+            import tempfile
+            import os
+            
+            response = requests.get(audio_url, timeout=30)
+            if response.status_code != 200:
+                return f"❌ Failed to download audio: {response.status_code}"
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Transcribe with OpenAI Whisper
+                with open(temp_file_path, 'rb') as audio_file:
+                    transcript = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        response_format="text"
+                    )
+                
+                return transcript.strip() if transcript.strip() else "🔇 [No speech detected]"
+                
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
+                    
+        except Exception as e:
+            return f"❌ Transcription error: {e}"
 
 class KeywordMatcher:
     """Handle keyword detection"""
@@ -338,9 +370,9 @@ class RadioMonitor:
         """Process individual call with enhanced logging"""
         try:
             group_id = call.get('groupId')
-            call_id = call.get('id')
+            call_id = call.get('ts', 'Unknown')  # Use timestamp as ID since no 'id' field
             timestamp = datetime.fromtimestamp(call.get('ts', time.time())).strftime('%Y-%m-%d %H:%M:%S')
-            audio_url = call.get('audioUrl')
+            audio_url = call.get('url')  # Changed from 'audioUrl' to 'url'
             duration = call.get('duration', 0)
             
             # Log call processing with more details
