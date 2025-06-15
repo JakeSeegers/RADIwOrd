@@ -140,26 +140,85 @@ class RadioMonitorAPI:
             jwt_token = self.generate_jwt()
             headers = {"Authorization": f"Bearer {jwt_token}"}
             
-            url = f"{self.base_url}/calls/v1/groups_county/{county_id}"
-            response = requests.get(url, headers=headers)
+            # Try multiple endpoints to find channels
+            endpoints_to_try = [
+                f"{self.base_url}/calls/v1/groups_county/{county_id}",
+                f"{self.base_url}/calls/v1/playlists_county/{county_id}",
+                f"{self.base_url}/calls/v1/county_groups/{county_id}",
+            ]
             
-            if response.status_code == 200:
-                data = response.json()
-                discovered = {}
+            discovered = {}
+            
+            for endpoint in endpoints_to_try:
+                try:
+                    response = requests.get(endpoint, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.info(f"✅ Found data using endpoint: {endpoint}")
+                        
+                        # Handle different response structures
+                        if isinstance(data, dict):
+                            # Handle groups response
+                            groups = data.get('groups', [])
+                            if groups:
+                                for group in groups:
+                                    if isinstance(group, dict):
+                                        group_id = group.get('groupId') or group.get('id')
+                                        description = group.get('description') or group.get('descr') or group.get('name', 'Unknown')
+                                        if group_id:
+                                            discovered[str(group_id)] = description
+                            
+                            # Handle playlists response
+                            playlists = data.get('playlists', [])
+                            if playlists:
+                                for playlist in playlists:
+                                    playlist_groups = playlist.get('groups', [])
+                                    for group in playlist_groups:
+                                        group_id = group.get('groupId') or group.get('id')
+                                        if group_id:
+                                            # Try to get description from playlist or use generic name
+                                            description = f"Playlist: {playlist.get('name', 'Unknown')}"
+                                            discovered[str(group_id)] = description
+                        
+                        elif isinstance(data, list):
+                            # Handle direct list response
+                            for item in data:
+                                if isinstance(item, dict):
+                                    group_id = item.get('groupId') or item.get('id')
+                                    description = item.get('description') or item.get('descr') or item.get('name', 'Unknown')
+                                    if group_id:
+                                        discovered[str(group_id)] = description
+                        
+                        if discovered:
+                            return discovered
+                    
+                    elif response.status_code == 404:
+                        st.info(f"No data found at: {endpoint}")
+                    else:
+                        st.warning(f"Error {response.status_code} from: {endpoint}")
                 
-                groups = data.get('groups', []) if isinstance(data, dict) else data
+                except Exception as e:
+                    st.warning(f"Failed to query {endpoint}: {e}")
+                    continue
+            
+            # If no channels found, suggest alternatives
+            if not discovered:
+                st.error("No channels found. Try these solutions:")
+                st.markdown("""
+                **Common issues:**
+                - **County ID might be wrong** - Check [RadioReference.com](https://radioreference.com) for correct ID
+                - **No Broadcastify Calls coverage** - This county might not have active nodes
+                - **Try popular counties:**
+                  - `741` - Marion County, IN (Indianapolis)
+                  - `442` - Fulton County, GA (Atlanta)  
+                  - `2733` - Washtenaw County, MI (Ann Arbor)
+                  - `1706` - Orange County, FL (Orlando)
                 
-                for group in groups:
-                    if isinstance(group, dict):
-                        group_id = group.get('groupId') or group.get('id')
-                        description = group.get('description') or group.get('descr') or group.get('name', 'Unknown')
-                        if group_id:
-                            discovered[str(group_id)] = description
-                
-                return discovered
-            else:
-                st.error(f"County discovery failed: {response.status_code}")
-                return {}
+                **Alternative:** Use the Manual Add section to add specific group IDs you know exist.
+                """)
+            
+            return discovered
         
         except Exception as e:
             st.error(f"County discovery error: {e}")
@@ -320,6 +379,30 @@ def create_discovery_interface():
     """Create channel discovery interface"""
     st.header("🔍 Discover Live Radio Channels")
     
+    # Add quick test buttons for known working counties
+    st.subheader("🚀 Quick Test - Try Popular Counties")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("🏙️ Indianapolis (741)"):
+            test_county_discovery("741", "Marion County, IN")
+    
+    with col2:
+        if st.button("🍑 Atlanta (442)"):
+            test_county_discovery("442", "Fulton County, GA")
+    
+    with col3:
+        if st.button("🏫 Ann Arbor (2733)"):
+            test_county_discovery("2733", "Washtenaw County, MI")
+    
+    with col4:
+        if st.button("🌴 Orlando (1706)"):
+            test_county_discovery("1706", "Orange County, FL")
+    
+    st.markdown("---")
+    
+    # Original discovery interface
+    st.subheader("🎯 Custom County Discovery")
     col1, col2 = st.columns([2, 1])
     
     with col1:
@@ -332,16 +415,59 @@ def create_discovery_interface():
     with col2:
         if st.button("🔍 Discover County", type="primary"):
             if county_id:
-                with st.spinner("Discovering channels..."):
-                    discovered = monitor.api.discover_county_channels(county_id)
-                    if discovered:
-                        st.session_state.discovered_channels.update(discovered)
-                        st.success(f"Found {len(discovered)} channels!")
-                        st.rerun()
-                    else:
-                        st.error("No channels found for this county")
+                test_county_discovery(county_id, f"County {county_id}")
             else:
                 st.warning("Please enter a County ID")
+    
+    # Manual group addition
+    st.markdown("---")
+    st.subheader("➕ Manual Group Addition")
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        manual_id = st.text_input("Group ID", placeholder="e.g., 100-22361")
+    with col2:
+        manual_name = st.text_input("Channel Name", placeholder="e.g., Ann Arbor DPSS")
+    with col3:
+        if st.button("➕ Add"):
+            if manual_id and manual_name:
+                st.session_state.discovered_channels[manual_id] = manual_name
+                st.success("Channel added!")
+                st.rerun()
+
+def test_county_discovery(county_id, county_name):
+    """Test discovery for a specific county"""
+    with st.spinner(f"Discovering channels in {county_name}..."):
+        discovered = monitor.api.discover_county_channels(county_id)
+        if discovered:
+            st.session_state.discovered_channels.update(discovered)
+            st.success(f"✅ Found {len(discovered)} channels in {county_name}!")
+            st.rerun()
+        else:
+            st.error(f"❌ No channels found in {county_name}")
+
+# Add this new function
+def create_api_test():
+    """Test API connectivity"""
+    st.subheader("🔧 API Connection Test")
+    
+    if st.button("Test Broadcastify API"):
+        with st.spinner("Testing API connection..."):
+            # Test basic JWT generation
+            jwt_token = monitor.api.generate_jwt()
+            if jwt_token:
+                st.success("✅ JWT generation successful")
+                
+                # Test authentication
+                if monitor.api.authenticate_user():
+                    st.success("✅ User authentication successful")
+                    st.success(f"User ID: {st.session_state.user_id}")
+                    st.success(f"Token expires: {datetime.fromtimestamp(time.time() + 3600)}")
+                else:
+                    st.error("❌ User authentication failed")
+            else:
+                st.error("❌ JWT generation failed")
 
 def create_channel_selection():
     """Create channel selection interface"""
@@ -487,12 +613,8 @@ def create_settings_page():
     st.session_state.username = st.text_input("Username", value=st.session_state.username)
     st.session_state.password = st.text_input("Password", type="password", value=st.session_state.password)
     
-    if st.button("🔧 Test Connection"):
-        with st.spinner("Testing API connection..."):
-            if monitor.api.authenticate_user():
-                st.success("✅ API connection successful!")
-            else:
-                st.error("❌ API connection failed")
+    # Add API testing
+    create_api_test()
     
     st.markdown("---")
     st.subheader("Keywords")
