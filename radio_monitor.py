@@ -135,19 +135,26 @@ class RadioMonitorAPI:
             return False
     
     def discover_county_channels(self, county_id):
-        """Discover channels by county using the correct API endpoint"""
+        """Discover channels by county using AUTHENTICATED user JWT"""
         try:
-            jwt_token = self.generate_jwt()
+            # FIRST: Authenticate user to get uid and token
+            if not self.authenticate_user():
+                st.error("❌ User authentication failed - required for county discovery")
+                return {}
+            
+            # SECOND: Generate JWT with user authentication
+            jwt_token = self.generate_jwt(include_user_auth=True)
             if not jwt_token:
-                st.error("Failed to generate JWT token")
+                st.error("Failed to generate authenticated JWT token")
                 return {}
             
             headers = {"Authorization": f"Bearer {jwt_token}"}
             
-            # Use the CORRECT endpoint from the documentation: playlists_county
-            url = f"{self.base_url}/calls/v1/playlists_county/{county_id}"
+            # Use the CORRECT endpoint with AUTHENTICATED JWT
+            url = f"{self.base_url}/calls/v1/groups_county/{county_id}"
             
-            st.info(f"🔍 Trying correct endpoint: {url}")
+            st.info(f"🔍 Trying with AUTHENTICATED JWT: {url}")
+            st.info(f"📋 User ID: {st.session_state.user_id}")
             st.info(f"📋 Headers: Authorization: Bearer {jwt_token[:20]}...")
             
             response = requests.get(url, headers=headers)
@@ -157,55 +164,58 @@ class RadioMonitorAPI:
             
             if response.status_code == 200:
                 data = response.json()
-                st.success(f"✅ Success! Raw response:")
+                st.success(f"✅ SUCCESS! County groups found:")
                 st.json(data)
                 
                 discovered = {}
                 
-                # Handle playlist response - playlists contain groups
-                if isinstance(data, list):
-                    # Multiple playlists
-                    for playlist in data:
-                        if isinstance(playlist, dict):
-                            playlist_name = playlist.get('name', 'Unknown Playlist')
-                            groups = playlist.get('groups', [])
-                            
-                            for group in groups:
-                                if isinstance(group, dict):
-                                    group_id = group.get('groupId')
-                                    if group_id:
-                                        discovered[str(group_id)] = f"{playlist_name}"
-                
-                elif isinstance(data, dict):
-                    # Single playlist or other structure
-                    if 'groups' in data:
-                        playlist_name = data.get('name', 'County Playlist')
-                        groups = data.get('groups', [])
-                        
+                # Handle groups response
+                if isinstance(data, dict):
+                    groups = data.get('groups', [])
+                    if groups:
+                        st.info(f"Found {len(groups)} groups in response")
                         for group in groups:
                             if isinstance(group, dict):
-                                group_id = group.get('groupId')
+                                group_id = group.get('groupId') or group.get('id')
+                                description = (group.get('description') or 
+                                             group.get('descr') or 
+                                             group.get('name') or 
+                                             f"Group {group_id}")
                                 if group_id:
-                                    discovered[str(group_id)] = f"{playlist_name}"
+                                    discovered[str(group_id)] = description
                     else:
-                        # Maybe it's a different structure
-                        st.info("Different response structure, analyzing...")
-                        for key, value in data.items():
-                            st.info(f"Key: {key}, Type: {type(value)}")
+                        st.info("Response has 'groups' key but it's empty")
+                
+                elif isinstance(data, list):
+                    st.info(f"Direct list response with {len(data)} items")
+                    for group in data:
+                        if isinstance(group, dict):
+                            group_id = group.get('groupId') or group.get('id')
+                            description = (group.get('description') or 
+                                         group.get('descr') or 
+                                         group.get('name') or 
+                                         f"Group {group_id}")
+                            if group_id:
+                                discovered[str(group_id)] = description
+                
+                if discovered:
+                    st.success(f"🎉 Successfully discovered {len(discovered)} groups!")
+                else:
+                    st.warning("Got 200 response but no groups found in data structure")
                 
                 return discovered
             
             elif response.status_code == 401:
-                st.error("❌ Authentication failed - JWT token issue")
-                st.info("Try refreshing your credentials in Settings")
+                st.error("❌ Authentication failed")
+                st.info("Check your Broadcastify credentials in Settings")
                 
             elif response.status_code == 404:
-                st.warning(f"❌ No public playlists found for county {county_id}")
+                st.warning(f"❌ County {county_id} not found")
                 st.info("This could mean:")
                 st.markdown("""
-                - County has no public Broadcastify Calls playlists
-                - County ID is correct but no community-created playlists
-                - Try the 'Test All Endpoints' to see what works
+                - County ID doesn't exist in the database
+                - No Broadcastify Calls coverage for this county
+                - County has no active groups
                 """)
                 
             else:
@@ -223,31 +233,39 @@ class RadioMonitorAPI:
             return {}
     
     def test_all_endpoints(self):
-        """Test what endpoints actually exist"""
-        jwt_token = self.generate_jwt()
+        """Test what endpoints actually exist with AUTHENTICATED JWT"""
+        # First authenticate user
+        if not self.authenticate_user():
+            st.error("❌ User authentication failed - required for most endpoints")
+            return
+        
+        # Generate authenticated JWT
+        jwt_token = self.generate_jwt(include_user_auth=True)
         if not jwt_token:
+            st.error("Failed to generate authenticated JWT")
             return
         
         headers = {"Authorization": f"Bearer {jwt_token}"}
         
-        # Test the CORRECT endpoints from the documentation
+        # Test the endpoints from the documentation with AUTHENTICATED JWT
         test_endpoints = [
-            "/calls/v1/playlists_public",               # ✅ Should work
-            "/calls/v1/playlists_county/741",           # ✅ Correct format
-            "/calls/v1/playlists_county/1307",          # ✅ Test user's county
-            "/calls/v1/playlist_get/some-uuid",         # ❓ Needs real UUID
-            "/calls/v1/groups_county/741",              # ❌ We know this doesn't work
+            ("/calls/v1/playlists_public", "Get all public playlists"),
+            ("/calls/v1/groups_county/741", "Get groups for Indianapolis"),
+            ("/calls/v1/groups_county/1307", "Get groups for your county"),
+            ("/calls/v1/playlists_user", "Get your playlists (auth required)"),
         ]
         
-        st.subheader("🔬 API Endpoint Testing (Using Correct Endpoints)")
+        st.subheader("🔬 API Endpoint Testing (With User Authentication)")
+        st.info(f"Testing with User ID: {st.session_state.user_id}")
         
-        for endpoint in test_endpoints:
+        for endpoint, description in test_endpoints:
             try:
                 url = f"{self.base_url}{endpoint}"
                 response = requests.get(url, headers=headers)
                 
                 if response.status_code == 200:
                     st.success(f"✅ {endpoint} - Works!")
+                    st.info(f"Description: {description}")
                     data = response.json()
                     if isinstance(data, list):
                         st.info(f"Returns list with {len(data)} items")
@@ -259,9 +277,14 @@ class RadioMonitorAPI:
                 elif response.status_code == 404:
                     st.warning(f"❌ {endpoint} - Not found")
                 elif response.status_code == 401:
-                    st.error(f"🔒 {endpoint} - Authentication required")
+                    st.error(f"🔒 {endpoint} - Authentication failed")
                 else:
                     st.info(f"⚠️ {endpoint} - Status {response.status_code}")
+                    try:
+                        error_data = response.json()
+                        st.json(error_data)
+                    except:
+                        st.text(response.text[:200])
                     
             except Exception as e:
                 st.error(f"❌ {endpoint} - Error: {e}")
