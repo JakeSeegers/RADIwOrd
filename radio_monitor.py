@@ -1,4 +1,67 @@
-import streamlit as st
+def create_discovery_interface():
+    """Create channel discovery interface"""
+    st.header("🔍 Discover Live Radio Channels")
+    
+    # Add debug section
+    st.subheader("🔬 Debug County Discovery")
+    st.info("This will show detailed debug info to figure out why discovery isn't working")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        county_id = st.text_input(
+            "Enter County ID for Debug Test",
+            placeholder="e.g., 741 for Indianapolis",
+            help="This will show detailed API response info"
+        )
+    
+    with col2:
+        if st.button("🔍 Debug Discovery", type="primary"):
+            if county_id:
+                test_county_discovery(county_id, f"County {county_id}")
+            else:
+                st.warning("Please enter a County ID")
+    
+    st.markdown("---")
+    
+    # Add quick test buttons for known working counties
+    st.subheader("🚀 Quick Test - Try Popular Counties")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("🏙️ Indianapolis (741)"):
+            test_county_discovery("741", "Marion County, IN")
+    
+    with col2:
+        if st.button("🍑 Atlanta (442)"):
+            test_county_discovery("442", "Fulton County, GA")
+    
+    with col3:
+        if st.button("🏫 Ann Arbor (2733)"):
+            test_county_discovery("2733", "Washtenaw County, MI")
+    
+    with col4:
+        if st.button("🌴 Orlando (1706)"):
+            test_county_discovery("1706", "Orange County, FL")
+    
+    st.markdown("---")
+    
+    # Manual group addition
+    st.subheader("➕ Manual Group Addition")
+    st.info("If discovery doesn't work, manually add Group IDs from the web interface")
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        manual_id = st.text_input("Group ID", placeholder="e.g., 100-22361 or c-223312")
+    with col2:
+        manual_name = st.text_input("Channel Name", placeholder="e.g., Ann Arbor DPSS")
+    with col3:
+        if st.button("➕ Add"):
+            if manual_id and manual_name:
+                st.session_state.discovered_channels[manual_id] = manual_name
+                st.success("Channel added!")
+                st.rerun()import streamlit as st
 import requests
 import json
 import hmac
@@ -452,22 +515,30 @@ def create_api_test():
     """Test API connectivity"""
     st.subheader("🔧 API Connection Test")
     
-    if st.button("Test Broadcastify API"):
-        with st.spinner("Testing API connection..."):
-            # Test basic JWT generation
-            jwt_token = monitor.api.generate_jwt()
-            if jwt_token:
-                st.success("✅ JWT generation successful")
-                
-                # Test authentication
-                if monitor.api.authenticate_user():
-                    st.success("✅ User authentication successful")
-                    st.success(f"User ID: {st.session_state.user_id}")
-                    st.success(f"Token expires: {datetime.fromtimestamp(time.time() + 3600)}")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Test Basic Connection"):
+            with st.spinner("Testing API connection..."):
+                # Test basic JWT generation
+                jwt_token = monitor.api.generate_jwt()
+                if jwt_token:
+                    st.success("✅ JWT generation successful")
+                    
+                    # Test authentication
+                    if monitor.api.authenticate_user():
+                        st.success("✅ User authentication successful")
+                        st.success(f"User ID: {st.session_state.user_id}")
+                        st.success(f"Token expires: {datetime.fromtimestamp(time.time() + 3600)}")
+                    else:
+                        st.error("❌ User authentication failed")
                 else:
-                    st.error("❌ User authentication failed")
-            else:
-                st.error("❌ JWT generation failed")
+                    st.error("❌ JWT generation failed")
+    
+    with col2:
+        if st.button("🔬 Test All Endpoints"):
+            with st.spinner("Testing all API endpoints..."):
+                monitor.api.test_all_endpoints()
 
 def create_channel_selection():
     """Create channel selection interface"""
