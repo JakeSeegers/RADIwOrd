@@ -134,182 +134,38 @@ class RadioMonitorAPI:
             st.error(f"Authentication error: {e}")
             return False
     
-    def discover_county_feeds(self, county_id):
-        """Discover FEEDS by county using the CORRECT Broadcastify Feed API"""
+    def test_live_calls_api(self):
+        """Test the live calls API endpoint"""
         try:
-            # Use the CORRECT API endpoint for FEEDS
-            base_url = "https://api.broadcastify.com/audio/"
+            # First authenticate user
+            if not self.authenticate_user():
+                return False, "Authentication failed"
             
-            # Simple API key authentication (not JWT!)
+            # Generate authenticated JWT
+            jwt_token = self.generate_jwt(include_user_auth=True)
+            if not jwt_token:
+                return False, "JWT generation failed"
+            
+            headers = {"Authorization": f"Bearer {jwt_token}"}
+            
+            # Test with a dummy group (won't return calls but will test endpoint)
             params = {
-                'a': 'county',
-                'ctid': county_id,
-                'type': 'json',
-                'key': st.session_state.api_key
+                "groups": "100-22361",  # Example group
+                "init": "1"
             }
             
-            url = f"{base_url}?{'&'.join([f'{k}={v}' for k, v in params.items()])}"
-            
-            st.info(f"🔍 Trying CORRECT API: {url}")
-            st.info(f"📋 Using API Key: {st.session_state.api_key[:10]}...")
-            
-            response = requests.get(base_url, params=params)
-            
-            st.info(f"📊 Response Status: {response.status_code}")
-            st.info(f"📄 Response Headers: {dict(response.headers)}")
+            response = requests.get(f"{self.base_url}/calls/v1/live/", headers=headers, params=params)
             
             if response.status_code == 200:
                 data = response.json()
-                st.success(f"✅ SUCCESS! Found feeds for county {county_id}:")
-                st.json(data)
-                
-                discovered = {}
-                
-                # Parse feed data
-                if isinstance(data, list):
-                    st.info(f"Found {len(data)} feeds")
-                    for feed in data:
-                        if isinstance(feed, dict):
-                            feed_id = feed.get('feedId') or feed.get('id')
-                            description = (feed.get('descr') or 
-                                         feed.get('description') or 
-                                         feed.get('name') or 
-                                         f"Feed {feed_id}")
-                            if feed_id:
-                                discovered[str(feed_id)] = description
-                
-                elif isinstance(data, dict):
-                    # Handle single feed or nested structure
-                    feeds = data.get('feeds', [data])
-                    for feed in feeds:
-                        if isinstance(feed, dict):
-                            feed_id = feed.get('feedId') or feed.get('id')
-                            description = (feed.get('descr') or 
-                                         feed.get('description') or 
-                                         feed.get('name') or 
-                                         f"Feed {feed_id}")
-                            if feed_id:
-                                discovered[str(feed_id)] = description
-                
-                if discovered:
-                    st.success(f"🎉 Successfully discovered {len(discovered)} feeds!")
-                else:
-                    st.warning("Got 200 response but no feeds found in data structure")
-                
-                return discovered
-            
-            elif response.status_code == 401:
-                st.error("❌ Authentication failed - check your API key")
-                
-            elif response.status_code == 404:
-                st.warning(f"❌ County {county_id} not found in feed database")
-                
+                return True, f"Success! Endpoint works. Response keys: {list(data.keys())}"
             else:
-                st.error(f"❌ Unexpected response: {response.status_code}")
-                try:
-                    error_data = response.json()
-                    st.json(error_data)
-                except:
-                    st.text(response.text)
-            
-            return {}
+                return False, f"Error {response.status_code}: {response.text}"
         
         except Exception as e:
-            st.error(f"Discovery error: {e}")
-            return {}
+            return False, f"Exception: {e}"
     
-    def discover_what_actually_works(self):
-        """Brute force test to find what endpoints actually exist"""
-        # First authenticate user
-        if not self.authenticate_user():
-            st.error("❌ User authentication failed")
-            return
-        
-        # Generate authenticated JWT
-        jwt_token = self.generate_jwt(include_user_auth=True)
-        if not jwt_token:
-            st.error("Failed to generate authenticated JWT")
-            return
-        
-        headers = {"Authorization": f"Bearer {jwt_token}"}
-        
-        st.subheader("🕵️ Brute Force Endpoint Discovery")
-        st.info("Testing every possible endpoint format to see what actually works...")
-        
-        # Test all possible endpoint variations
-        test_variations = [
-            # From documentation (but apparently don't work)
-            "/calls/v1/groups_county/741",
-            "/calls/v1/groups_county/1307", 
-            
-            # Try different formats
-            "/calls/v1/county/741/groups",
-            "/calls/v1/county_groups/741",
-            "/calls/v1/counties/741/groups",
-            
-            # Try playlists (these might work)
-            "/calls/v1/playlists_public",
-            "/calls/v1/playlists_county/741",
-            "/calls/v1/playlists_county/1307",
-            "/calls/v1/county_playlists/741",
-            
-            # Try other documented endpoints
-            "/calls/v1/playlists_user",
-            
-            # Maybe there's a browse/search endpoint?
-            "/calls/v1/browse",
-            "/calls/v1/search",
-            "/calls/v1/groups",
-            "/calls/v1/counties",
-            
-            # Maybe it's under a different path?
-            "/common/v1/counties",
-            "/feeds/v1/counties",
-        ]
-        
-        working_endpoints = []
-        
-        for endpoint in test_variations:
-            try:
-                url = f"{self.base_url}{endpoint}"
-                response = requests.get(url, headers=headers)
-                
-                if response.status_code == 200:
-                    st.success(f"✅ {endpoint} - WORKS!")
-                    working_endpoints.append(endpoint)
-                    
-                    try:
-                        data = response.json()
-                        if isinstance(data, list):
-                            st.info(f"  Returns list with {len(data)} items")
-                            if len(data) > 0 and isinstance(data[0], dict):
-                                st.info(f"  Sample keys: {list(data[0].keys())}")
-                        elif isinstance(data, dict):
-                            st.info(f"  Returns dict with keys: {list(data.keys())}")
-                    except:
-                        st.info(f"  Non-JSON response")
-                        
-                elif response.status_code == 404:
-                    st.text(f"❌ {endpoint} - Not found")
-                elif response.status_code == 401:
-                    st.warning(f"🔒 {endpoint} - Auth failed")
-                elif response.status_code == 403:
-                    st.warning(f"🚫 {endpoint} - Forbidden")
-                else:
-                    st.info(f"⚠️ {endpoint} - Status {response.status_code}")
-                    
-            except Exception as e:
-                st.error(f"❌ {endpoint} - Error: {e}")
-        
-        st.subheader("🎯 Working Endpoints Summary")
-        if working_endpoints:
-            st.success(f"Found {len(working_endpoints)} working endpoints:")
-            for endpoint in working_endpoints:
-                st.write(f"✅ {endpoint}")
-        else:
-            st.error("No working endpoints found! Something is wrong with authentication or API access.")
-        
-        return working_endpoints
+    # Remove the old discover_what_actually_works function since we're not using endpoint discovery anymore
     
     def get_live_calls(self, group_ids, last_pos=None):
         """Get live calls for selected groups"""
