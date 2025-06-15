@@ -24,6 +24,14 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+# Try to import local Whisper
+try:
+    import whisper
+    import torch
+    LOCAL_WHISPER_AVAILABLE = True
+except ImportError:
+    LOCAL_WHISPER_AVAILABLE = False
+
 # Default configuration
 DEFAULT_CONFIG = {
     'api_key': 'otL35tw40MzbfjbNRNApY8JggubKsqV1',
@@ -909,7 +917,68 @@ def create_settings_page():
         st.success(f"Saved {len(keyword_list)} keywords")
     
     st.markdown("---")
-    st.subheader("OpenAI Transcription (Optional)")
+    st.subheader("🎤 Transcription Configuration")
+    
+    # Show current transcription method
+    transcriber_status = monitor.transcriber
+    if hasattr(transcriber_status, 'use_local_whisper') and transcriber_status.use_local_whisper:
+        st.success("✅ Using Local Whisper (Recommended - Fast & Free)")
+        if LOCAL_WHISPER_AVAILABLE and torch.cuda.is_available():
+            st.info("🚀 GPU acceleration enabled (Colab Pro)")
+        else:
+            st.info("💻 Running on CPU")
+    elif hasattr(transcriber_status, 'client') and transcriber_status.client:
+        st.info("ℹ️ Using OpenAI Whisper API (Costs money per transcription)")
+    else:
+        st.warning("⚠️ No transcription method available")
+        
+        if not LOCAL_WHISPER_AVAILABLE:
+            st.error("❌ Local Whisper not installed")
+        
+        if not OPENAI_AVAILABLE:
+            st.error("❌ OpenAI package not available")
+    
+    # Installation instructions for Colab
+    with st.expander("📖 Colab Setup Instructions"):
+        st.markdown("""
+        **For Google Colab (Recommended):**
+        
+        Run this in a Colab cell:
+        ```python
+        # Install Whisper and dependencies
+        !pip install openai-whisper torch
+        
+        # Restart runtime after installation
+        import os
+        os.kill(os.getpid(), 9)  # Restart runtime
+        ```
+        
+        **Then restart your Colab runtime and run your Streamlit app again.**
+        
+        **Alternative: OpenAI API**
+        - Get API key from https://platform.openai.com/api-keys
+        - Enter below and save (costs ~$0.006 per minute)
+        """)
+    
+    # Quick install button for Colab
+    if not LOCAL_WHISPER_AVAILABLE:
+        st.subheader("🔧 Quick Install")
+        st.info("Click to install Whisper in this Colab session:")
+        
+        install_code = '''
+# Run this in a Colab cell:
+!pip install openai-whisper torch
+
+# Then restart runtime with:
+import os
+os.kill(os.getpid(), 9)
+        '''
+        
+        st.code(install_code, language="python")
+        st.warning("⚠️ After running the code above, restart your Colab runtime and re-run your Streamlit app")
+    
+    st.subheader("OpenAI API Configuration (Optional)")
+    st.caption("Only needed if not using local Whisper")
     
     openai_key = st.text_input(
         "OpenAI API Key", 
@@ -925,6 +994,20 @@ def create_settings_page():
             st.success("✅ OpenAI API key saved!")
         else:
             st.info("OpenAI key cleared.")
+            
+    # Test transcription
+    st.subheader("🧪 Test Transcription")
+    if st.button("Test Transcription with Sample Audio"):
+        # Use one of the recent call URLs if available
+        test_calls = st.session_state.get('transcripts', [])
+        if test_calls and test_calls[-1].get('raw_call_data', {}).get('url'):
+            test_url = test_calls[-1]['raw_call_data']['url']
+            with st.spinner("Testing transcription..."):
+                result = monitor.transcriber.transcribe_call(test_url)
+                st.write("**Transcription Result:**")
+                st.text_area("Result", value=result, height=100)
+        else:
+            st.warning("No recent audio URLs available. Start monitoring first.")
 
 # ===================================================================
 # MAIN APPLICATION
