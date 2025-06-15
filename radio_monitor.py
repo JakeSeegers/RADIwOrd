@@ -32,6 +32,13 @@ try:
 except ImportError:
     LOCAL_WHISPER_AVAILABLE = False
 
+# Try to import AssemblyAI
+try:
+    import assemblyai as aai
+    ASSEMBLYAI_AVAILABLE = True
+except ImportError:
+    ASSEMBLYAI_AVAILABLE = False
+
 # Default configuration
 DEFAULT_CONFIG = {
     'api_key': 'otL35tw40MzbfjbNRNApY8JggubKsqV1',
@@ -43,7 +50,9 @@ DEFAULT_CONFIG = {
     'min_duration': 2,
     'poll_interval': 5,
     'keywords': ['ice', 'immigration', 'federal', 'detain', 'dpss', 'gunshot', 'shots fired', 'officer down'],
-    'openai_api_key': ''
+    'openai_api_key': '',
+    'assemblyai_api_key': '2d7021a9d04f4c0cb952ecc892f3880c',
+    'transcription_provider': 'assemblyai'  # Options: 'assemblyai', 'openai', 'local_whisper'
 }
 
 # Initialize session state
@@ -312,7 +321,7 @@ class RadioMonitor:
     
     def __init__(self):
         self.api = RadioMonitorAPI()
-        self.transcriber = SimpleTranscriber()
+        self.transcriber = MultiTranscriber()
         self.keyword_matcher = KeywordMatcher()
         self.last_pos = None
     
@@ -919,95 +928,168 @@ def create_settings_page():
     st.markdown("---")
     st.subheader("🎤 Transcription Configuration")
     
-    # Show current transcription method
-    transcriber_status = monitor.transcriber
-    if hasattr(transcriber_status, 'use_local_whisper') and transcriber_status.use_local_whisper:
-        st.success("✅ Using Local Whisper (Recommended - Fast & Free)")
-        if LOCAL_WHISPER_AVAILABLE and torch.cuda.is_available():
-            st.info("🚀 GPU acceleration enabled (Colab Pro)")
-        else:
-            st.info("💻 Running on CPU")
-    elif hasattr(transcriber_status, 'client') and transcriber_status.client:
-        st.info("ℹ️ Using OpenAI Whisper API (Costs money per transcription)")
+    # Show current status
+    status = monitor.transcriber.get_status()
+    if "✅" in status:
+        st.success(status)
     else:
-        st.warning("⚠️ No transcription method available")
-        
-        if not LOCAL_WHISPER_AVAILABLE:
-            st.error("❌ Local Whisper not installed")
-        
-        if not OPENAI_AVAILABLE:
-            st.error("❌ OpenAI package not available")
+        st.warning(status)
     
-    # Installation instructions for Colab
-    with st.expander("📖 Colab Setup Instructions"):
+    # Provider selection
+    st.subheader("📡 Choose Transcription Provider")
+    
+    available_providers = monitor.transcriber.get_available_providers()
+    
+    # Show provider options with details
+    provider_options = []
+    provider_details = {}
+    
+    if ASSEMBLYAI_AVAILABLE and st.session_state.get('assemblyai_api_key'):
+        provider_options.append('assemblyai')
+        provider_details['assemblyai'] = "AssemblyAI - Fast & Affordable ($0.37/hour)"
+    
+    if OPENAI_AVAILABLE and st.session_state.get('openai_api_key'):
+        provider_options.append('openai')
+        provider_details['openai'] = "OpenAI Whisper API - High Quality ($0.36/hour)"
+    
+    if LOCAL_WHISPER_AVAILABLE:
+        device = "GPU" if torch.cuda.is_available() else "CPU"
+        provider_options.append('local_whisper')
+        provider_details['local_whisper'] = f"Local Whisper - Free ({device})"
+    
+    if provider_options:
+        current_provider = st.session_state.get('transcription_provider', 'assemblyai')
+        
+        selected_provider = st.selectbox(
+            "Active Provider",
+            options=provider_options,
+            index=provider_options.index(current_provider) if current_provider in provider_options else 0,
+            format_func=lambda x: provider_details[x]
+        )
+        
+        if selected_provider != st.session_state.get('transcription_provider'):
+            st.session_state.transcription_provider = selected_provider
+            monitor.transcriber = MultiTranscriber()  # Reinitialize
+            st.success(f"Switched to {provider_details[selected_provider]}")
+            st.rerun()
+    
+    # Provider configuration sections
+    st.markdown("---")
+    st.subheader("🔧 Provider Configuration")
+    
+    # AssemblyAI Configuration
+    with st.expander("🎯 AssemblyAI Configuration (Recommended)", expanded=not available_providers.get('assemblyai')):
         st.markdown("""
-        **For Google Colab (Recommended):**
-        
-        Run this in a Colab cell:
-        ```python
-        # Install Whisper and dependencies
-        !pip install openai-whisper torch
-        
-        # Restart runtime after installation
-        import os
-        os.kill(os.getpid(), 9)  # Restart runtime
-        ```
-        
-        **Then restart your Colab runtime and run your Streamlit app again.**
-        
-        **Alternative: OpenAI API**
-        - Get API key from https://platform.openai.com/api-keys
-        - Enter below and save (costs ~$0.006 per minute)
+        **AssemblyAI Benefits:**
+        - ✅ **Direct URL processing** (no file downloads needed)
+        - ✅ **Fast transcription** (~2-5 seconds per call)
+        - ✅ **Good accuracy** for radio communications
+        - ✅ **Affordable** at $0.37/hour of audio
         """)
-    
-    # Quick install button for Colab
-    if not LOCAL_WHISPER_AVAILABLE:
-        st.subheader("🔧 Quick Install")
-        st.info("Click to install Whisper in this Colab session:")
         
-        install_code = '''
-# Run this in a Colab cell:
-!pip install openai-whisper torch
+        assemblyai_key = st.text_input(
+            "AssemblyAI API Key",
+            type="password",
+            value=st.session_state.get('assemblyai_api_key', ''),
+            help="Get your free API key from https://www.assemblyai.com/"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Save AssemblyAI Key"):
+                st.session_state.assemblyai_api_key = assemblyai_key
+                monitor.transcriber = MultiTranscriber()
+                if assemblyai_key:
+                    st.success("✅ AssemblyAI API key saved!")
+                else:
+                    st.info("AssemblyAI key cleared.")
+        
+        with col2:
+            if not assemblyai_key:
+                st.info("Get a free API key at: https://www.assemblyai.com/")
+    
+    # OpenAI Configuration  
+    with st.expander("🤖 OpenAI Configuration", expanded=False):
+        st.markdown("""
+        **OpenAI Whisper API:**
+        - ✅ **High accuracy** 
+        - ⚠️ **Requires file upload** (slower)
+        - 💰 **$0.36/hour** of audio
+        """)
+        
+        openai_key = st.text_input(
+            "OpenAI API Key",
+            type="password", 
+            value=st.session_state.get('openai_api_key', ''),
+            help="Get your API key from https://platform.openai.com/api-keys"
+        )
+        
+        if st.button("💾 Save OpenAI Key"):
+            st.session_state.openai_api_key = openai_key
+            monitor.transcriber = MultiTranscriber()
+            if openai_key:
+                st.success("✅ OpenAI API key saved!")
+            else:
+                st.info("OpenAI key cleared.")
+    
+    # Local Whisper Configuration
+    with st.expander("💻 Local Whisper Configuration", expanded=False):
+        if LOCAL_WHISPER_AVAILABLE:
+            device = "GPU (Fast)" if torch.cuda.is_available() else "CPU (Slow)"
+            st.success(f"✅ Local Whisper installed - Running on {device}")
+            st.markdown("""
+            **Local Whisper Benefits:**
+            - ✅ **Completely free**
+            - ✅ **No API limits**
+            - ✅ **Privacy** (no data sent to external services)
+            """)
+        else:
+            st.warning("❌ Local Whisper not installed")
+            st.markdown("""
+            **Install in Colab:**
+            ```python
+            !pip install openai-whisper torch
+            
+            # Restart runtime after installation
+            import os
+            os.kill(os.getpid(), 9)
+            ```
+            """)
+    
+    # Quick setup for Colab
+    if not any([ASSEMBLYAI_AVAILABLE, LOCAL_WHISPER_AVAILABLE]):
+        st.markdown("---")
+        st.subheader("🚀 Quick Setup for Colab")
+        st.info("Install packages to get started:")
+        
+        setup_code = '''
+# Install all transcription options in Colab:
+!pip install assemblyai openai-whisper torch
 
-# Then restart runtime with:
+# Restart runtime:
 import os
 os.kill(os.getpid(), 9)
         '''
-        
-        st.code(install_code, language="python")
-        st.warning("⚠️ After running the code above, restart your Colab runtime and re-run your Streamlit app")
+        st.code(setup_code, language="python")
     
-    st.subheader("OpenAI API Configuration (Optional)")
-    st.caption("Only needed if not using local Whisper")
-    
-    openai_key = st.text_input(
-        "OpenAI API Key", 
-        type="password",
-        value=st.session_state.get('openai_api_key', ''),
-        help="Get your API key from https://platform.openai.com/api-keys"
-    )
-    
-    if st.button("💾 Save OpenAI Key"):
-        st.session_state.openai_api_key = openai_key
-        monitor.transcriber = SimpleTranscriber()
-        if openai_key:
-            st.success("✅ OpenAI API key saved!")
-        else:
-            st.info("OpenAI key cleared.")
-            
     # Test transcription
+    st.markdown("---")
     st.subheader("🧪 Test Transcription")
-    if st.button("Test Transcription with Sample Audio"):
-        # Use one of the recent call URLs if available
-        test_calls = st.session_state.get('transcripts', [])
-        if test_calls and test_calls[-1].get('raw_call_data', {}).get('url'):
-            test_url = test_calls[-1]['raw_call_data']['url']
-            with st.spinner("Testing transcription..."):
-                result = monitor.transcriber.transcribe_call(test_url)
-                st.write("**Transcription Result:**")
-                st.text_area("Result", value=result, height=100)
-        else:
-            st.warning("No recent audio URLs available. Start monitoring first.")
+    
+    if available_providers:
+        if st.button("Test Current Provider"):
+            # Use one of the recent call URLs if available
+            test_calls = st.session_state.get('transcripts', [])
+            if test_calls and test_calls[-1].get('raw_call_data', {}).get('url'):
+                test_url = test_calls[-1]['raw_call_data']['url']
+                with st.spinner(f"Testing {provider_details.get(monitor.transcriber.active_provider, 'transcription')}..."):
+                    result = monitor.transcriber.transcribe_call(test_url)
+                    st.write("**Transcription Result:**")
+                    st.text_area("Result", value=result, height=100, key="test_result")
+            else:
+                st.warning("No recent audio URLs available. Start monitoring first to get test audio.")
+    else:
+        st.info("Configure at least one transcription provider to test.")
 
 # ===================================================================
 # MAIN APPLICATION
@@ -1031,6 +1113,17 @@ def main():
         
         st.metric("Selected Groups", len(st.session_state.get('selected_channels', [])))
         st.metric("Keywords", len(st.session_state.get('keywords', [])))
+        
+        # Show active transcription provider
+        if hasattr(monitor.transcriber, 'active_provider') and monitor.transcriber.active_provider:
+            provider_name = {
+                'assemblyai': 'AssemblyAI',
+                'openai': 'OpenAI',
+                'local_whisper': 'Local Whisper'
+            }.get(monitor.transcriber.active_provider, 'Unknown')
+            st.metric("Transcription", provider_name)
+        else:
+            st.metric("Transcription", "None")
         
         # Add note about using Calls API
         st.info("✅ Using Broadcastify Calls API")
