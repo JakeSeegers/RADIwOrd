@@ -166,7 +166,7 @@ class RadioMonitorAPI:
             return False, f"Exception: {e}"
     
     def get_live_calls(self, group_ids, last_pos=None):
-        """Get live calls for selected groups"""
+        """Get live calls for selected groups with detailed logging"""
         try:
             if not self.authenticate_user():
                 return [], None
@@ -174,7 +174,8 @@ class RadioMonitorAPI:
             jwt_token = self.generate_jwt(include_user_auth=True)
             headers = {"Authorization": f"Bearer {jwt_token}"}
             
-            groups_param = ",".join(group_ids[:5])
+            # Don't limit to 5 groups - use all selected groups
+            groups_param = ",".join(group_ids)
             
             params = {"groups": groups_param}
             if last_pos:
@@ -182,18 +183,48 @@ class RadioMonitorAPI:
             else:
                 params["init"] = 1
             
+            # Log the request details
+            current_time = datetime.now().strftime('%H:%M:%S')
+            log_entry = f"[{current_time}] API Request - Groups: {groups_param}, LastPos: {last_pos}"
+            if 'monitor_log' not in st.session_state:
+                st.session_state.monitor_log = []
+            st.session_state.monitor_log.append(log_entry)
+            
             response = requests.get(f"{self.base_url}/calls/v1/live/", headers=headers, params=params)
             
             if response.status_code == 200:
                 data = response.json()
                 calls = data.get('calls', [])
                 last_pos = data.get('lastPos', int(time.time()))
+                
+                # Log detailed response info
+                log_entry = f"[{current_time}] API Response - Status: 200, Calls: {len(calls)}, LastPos: {last_pos}"
+                st.session_state.monitor_log.append(log_entry)
+                
+                # Log details about each call
+                for i, call in enumerate(calls):
+                    group_id = call.get('groupId', 'Unknown')
+                    call_id = call.get('id', 'Unknown')
+                    ts = call.get('ts', 'Unknown')
+                    audio_url = call.get('audioUrl', 'No URL')
+                    duration = call.get('duration', 'Unknown')
+                    
+                    log_entry = f"[{current_time}] Call {i+1}: Group={group_id}, ID={call_id}, Duration={duration}s, HasAudio={bool(audio_url)}"
+                    st.session_state.monitor_log.append(log_entry)
+                
                 return calls, last_pos
             else:
+                log_entry = f"[{current_time}] API Error: {response.status_code} - {response.text}"
+                st.session_state.monitor_log.append(log_entry)
                 st.error(f"Live calls error: {response.status_code}")
                 return [], None
         
         except Exception as e:
+            current_time = datetime.now().strftime('%H:%M:%S')
+            log_entry = f"[{current_time}] Exception in get_live_calls: {e}"
+            if 'monitor_log' not in st.session_state:
+                st.session_state.monitor_log = []
+            st.session_state.monitor_log.append(log_entry)
             st.error(f"Live calls error: {e}")
             return [], None
 
@@ -246,7 +277,7 @@ class RadioMonitor:
         self.last_pos = None
     
     def monitor_loop(self, stop_event):
-        """Main monitoring loop with debugging"""
+        """Main monitoring loop with enhanced debugging"""
         while not stop_event.is_set():
             try:
                 if not st.session_state.selected_channels:
@@ -255,56 +286,66 @@ class RadioMonitor:
                 
                 # Add to monitoring log
                 current_time = datetime.now().strftime('%H:%M:%S')
-                log_entry = f"[{current_time}] Polling API for {len(st.session_state.selected_channels)} groups..."
+                log_entry = f"[{current_time}] Starting poll for {len(st.session_state.selected_channels)} groups: {', '.join(st.session_state.selected_channels)}"
                 
                 if 'monitor_log' not in st.session_state:
                     st.session_state.monitor_log = []
                 st.session_state.monitor_log.append(log_entry)
                 
-                # Keep only last 20 log entries
-                if len(st.session_state.monitor_log) > 20:
-                    st.session_state.monitor_log = st.session_state.monitor_log[-20:]
+                # Keep only last 50 log entries
+                if len(st.session_state.monitor_log) > 50:
+                    st.session_state.monitor_log = st.session_state.monitor_log[-50:]
                 
                 # Get live calls
                 calls, self.last_pos = self.api.get_live_calls(st.session_state.selected_channels, self.last_pos)
-                
-                # Log API response
-                log_entry = f"[{current_time}] API returned {len(calls) if calls else 0} calls"
-                st.session_state.monitor_log.append(log_entry)
                 
                 # Update last activity
                 st.session_state.last_activity = current_time
                 
                 if calls:
-                    log_entry = f"[{current_time}] Processing {len(calls)} new calls..."
+                    log_entry = f"[{current_time}] 🎯 Processing {len(calls)} new calls..."
                     st.session_state.monitor_log.append(log_entry)
-                
-                for call in calls:
-                    if stop_event.is_set():
-                        break
                     
-                    self.process_call(call)
-                    st.session_state.monitor_stats["calls_received"] += 1
+                    # Process each call with detailed logging
+                    for i, call in enumerate(calls):
+                        if stop_event.is_set():
+                            break
+                        
+                        try:
+                            log_entry = f"[{current_time}] Processing call {i+1}/{len(calls)}: {call.get('id', 'Unknown')}"
+                            st.session_state.monitor_log.append(log_entry)
+                            
+                            self.process_call(call)
+                            st.session_state.monitor_stats["calls_received"] += 1
+                            
+                            log_entry = f"[{current_time}] ✅ Successfully processed call {i+1}"
+                            st.session_state.monitor_log.append(log_entry)
+                            
+                        except Exception as call_error:
+                            log_entry = f"[{current_time}] ❌ Error processing call {i+1}: {call_error}"
+                            st.session_state.monitor_log.append(log_entry)
                 
                 time.sleep(st.session_state.poll_interval)
             
             except Exception as e:
-                error_log = f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: {e}"
+                error_log = f"[{datetime.now().strftime('%H:%M:%S')}] MONITOR ERROR: {e}"
                 if 'monitor_log' not in st.session_state:
                     st.session_state.monitor_log = []
                 st.session_state.monitor_log.append(error_log)
                 time.sleep(10)
     
     def process_call(self, call):
-        """Process individual call with logging"""
+        """Process individual call with enhanced logging"""
         try:
             group_id = call.get('groupId')
+            call_id = call.get('id')
             timestamp = datetime.fromtimestamp(call.get('ts', time.time())).strftime('%Y-%m-%d %H:%M:%S')
             audio_url = call.get('audioUrl')
+            duration = call.get('duration', 0)
             
-            # Log call processing
+            # Log call processing with more details
             current_time = datetime.now().strftime('%H:%M:%S')
-            log_entry = f"[{current_time}] Processing call from {group_id}"
+            log_entry = f"[{current_time}] 📞 Call Details: ID={call_id}, Group={group_id}, Duration={duration}s"
             if 'monitor_log' not in st.session_state:
                 st.session_state.monitor_log = []
             st.session_state.monitor_log.append(log_entry)
@@ -315,12 +356,18 @@ class RadioMonitor:
                 'timestamp': timestamp,
                 'channel_name': channel_name,
                 'group_id': group_id,
+                'call_id': call_id,
                 'audio_url': audio_url,
+                'duration': duration,
                 'transcript': '',
-                'keywords_found': []
+                'keywords_found': [],
+                'raw_call_data': call  # Store raw call data for debugging
             }
             
             if audio_url:
+                log_entry = f"[{current_time}] 🎵 Transcribing audio: {audio_url[:50]}..."
+                st.session_state.monitor_log.append(log_entry)
+                
                 transcript = self.transcriber.transcribe_call(audio_url)
                 transcript_data['transcript'] = transcript
                 
@@ -331,13 +378,24 @@ class RadioMonitor:
                     st.session_state.monitor_stats["keywords_found"] += 1
                     log_entry = f"[{current_time}] 🚨 KEYWORDS FOUND: {', '.join(keywords_found)}"
                     st.session_state.monitor_log.append(log_entry)
+            else:
+                log_entry = f"[{current_time}] ⚠️ No audio URL for call {call_id}"
+                st.session_state.monitor_log.append(log_entry)
+            
+            # Add transcript to session state
+            if 'transcripts' not in st.session_state:
+                st.session_state.transcripts = []
             
             st.session_state.transcripts.append(transcript_data)
             
+            # Keep only last 100 transcripts
             if len(st.session_state.transcripts) > 100:
                 st.session_state.transcripts = st.session_state.transcripts[-100:]
             
             st.session_state.monitor_stats["calls_processed"] += 1
+            
+            log_entry = f"[{current_time}] ✅ Call {call_id} processed successfully"
+            st.session_state.monitor_log.append(log_entry)
             
         except Exception as e:
             error_log = f"[{datetime.now().strftime('%H:%M:%S')}] Call processing error: {e}"
@@ -373,15 +431,15 @@ def create_discovery_interface():
     st.subheader("➕ Add Radio Groups to Monitor")
     st.markdown("""
     **How to find Group IDs:**
-    1. Go to **[📻 Broadcastify Browse](https://www.broadcastify.com/listen/)** 
-    2. **Navigate**: State → County → Radio Category (EMS, Fire, etc.) → Specific Dispatch Channel
-    3. **Click "Listen Live"** 
-    4. **Copy Group ID** from URL like `broadcastify.com/calls/tg/4390/2797`
-    5. **Format as** `4390-2797` (system-talkgroup)
+    1. Go to **[📻 Broadcastify Calls Coverage](https://www.broadcastify.com/calls/coverage/)** 
+    2. **Navigate**: Find your area → Look for active systems
+    3. **Click on a system** to see talkgroups/channels
+    4. **Copy Group ID** from the system details
+    5. **Format as** `system-talkgroup` (e.g., `4390-2797`)
     """)
     
-    # Add direct link
-    st.info("🔗 **[Click here to browse for active radio channels](https://www.broadcastify.com/listen/)**")
+    # Add direct link with corrected URL
+    st.info("🔗 **[Click here to browse for active radio systems with calls](https://www.broadcastify.com/calls/coverage/)**")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
@@ -412,7 +470,7 @@ def create_discovery_interface():
     st.info("Click to add an example group (may or may not be active):")
     
     popular_groups = [
-        ("4390-2797", "Example: From browse URL format"),
+        ("4390-2797", "Example: From system URL format"),
         ("100-22361", "Example: Police Dispatch"), 
         ("c-154430", "Example: Conventional Channel"),
     ]
@@ -450,12 +508,12 @@ def create_discovery_interface():
     # Instructions for finding groups
     with st.expander("📖 How to Find Active Groups"):
         st.markdown("""
-        **Method 1: Browse Broadcastify Website**
-        1. Go to **[Broadcastify Browse](https://www.broadcastify.com/listen/)**
-        2. **Navigate**: State → County → Radio Category (EMS, Fire, etc.) → Specific Dispatch Channel
-        3. **Click "Listen Live"** 
-        4. **Look for URL** like `https://www.broadcastify.com/calls/tg/4390/2797`
-        5. **Extract Group ID**: `4390-2797` (format: `system-talkgroup`)
+        **Method 1: Browse Broadcastify Calls Coverage**
+        1. Go to **[Broadcastify Calls Coverage](https://www.broadcastify.com/calls/coverage/)**
+        2. **Find your area** on the map or list
+        3. **Click on a system** that shows recent call activity
+        4. **Look for talkgroup IDs** in the system details
+        5. **Format as** `system-talkgroup` (e.g., `4390-2797`)
         
         **Method 2: RadioReference Database**
         1. Go to [radioreference.com](https://radioreference.com)
@@ -468,9 +526,10 @@ def create_discovery_interface():
         - **Conventional**: `c-{frequency_id}` (e.g., `c-223312`)
         
         **⚠️ Important Notes:**
-        - Groups must have **recent activity** to show calls
+        - Groups must have **recent call activity** to show calls
         - Some groups may be **encrypted** (won't work)
-        - **Test with active groups** that you can see calls on the website
+        - **Test with active groups** that you can see calls for on the coverage page
+        - Look for systems with green indicators showing recent activity
         """)
 
 def create_channel_selection():
@@ -540,7 +599,7 @@ def create_channel_selection():
         st.warning("⚠️ No groups selected for monitoring")
 
 def create_monitoring_dashboard():
-    """Create monitoring dashboard"""
+    """Create monitoring dashboard with enhanced debugging"""
     st.header("📻 Live Call Monitor")
     
     # Status indicators
@@ -589,10 +648,10 @@ def create_monitoring_dashboard():
             st.info("Monitoring stopped")
             st.rerun()
     
-    # Add debugging section
+    # Enhanced debugging section
     if st.session_state.monitor_running:
         st.markdown("---")
-        st.subheader("🔍 Live Debugging")
+        st.subheader("🔍 Live Debugging & Monitoring Activity")
         
         col1, col2 = st.columns(2)
         
@@ -610,7 +669,8 @@ def create_monitoring_dashboard():
                         if calls:
                             st.success(f"✅ Got {len(calls)} calls!")
                             with st.expander("Show Raw Call Data"):
-                                st.json(calls[0])
+                                for i, call in enumerate(calls):
+                                    st.json({f"Call {i+1}": call})
                         else:
                             st.info("ℹ️ No new calls (this is normal if no recent activity)")
         
@@ -626,13 +686,23 @@ def create_monitoring_dashboard():
             if st.button("🔄 Refresh Stats"):
                 st.rerun()
         
-        # Show monitoring activity log
+        # Show detailed monitoring activity log
         if 'monitor_log' in st.session_state and st.session_state.monitor_log:
-            with st.expander("📋 Recent Monitoring Activity"):
-                for log_entry in st.session_state.monitor_log[-10:]:
-                    st.text(log_entry)
+            st.subheader("📋 Recent Monitoring Activity (Detailed)")
+            
+            # Show last 20 log entries
+            recent_logs = st.session_state.monitor_log[-20:]
+            
+            # Use a text area to show logs
+            log_text = "\n".join(recent_logs)
+            st.text_area("Activity Log", value=log_text, height=300, key="activity_log")
+            
+            # Clear logs button
+            if st.button("🗑️ Clear Activity Log"):
+                st.session_state.monitor_log = []
+                st.rerun()
         
-        st.info("📡 Monitoring active - polls API every 5 seconds. Check Transcripts tab for results.")
+        st.info("📡 Monitoring active - polls API every 5 seconds. Check activity log above and Transcripts tab for results.")
         
         # Auto-refresh for live updates
         time.sleep(3)
@@ -647,13 +717,14 @@ def create_monitoring_dashboard():
         3. **Downloads audio** files for each call
         4. **Transcribes** audio using OpenAI Whisper (if API key added)
         5. **Searches** transcripts for your keywords
-        6. **Sends email alerts** when keywords are found
+        6. **Logs everything** in the activity log above
         
         **Debugging Tips:**
+        - **Watch the Activity Log** - it shows exactly what's happening
         - Use "Test API Call Now" to verify the API is responding
-        - Check the "Recent Monitoring Activity" log
+        - Check if your groups have recent activity on the Broadcastify website
         - Look for calls in the Transcripts tab
-        - If no calls appear, the groups might not have recent activity
+        - If no calls appear, try different group IDs from active systems
         """)
 
 def start_monitoring():
@@ -676,7 +747,7 @@ def stop_monitoring():
         st.session_state.stop_event.set()
 
 def create_transcript_viewer():
-    """Create transcript viewer"""
+    """Create enhanced transcript viewer"""
     st.header("📝 Live Call Transcripts")
     
     # Filters
@@ -693,6 +764,7 @@ def create_transcript_viewer():
     if not transcripts:
         if st.session_state.monitor_running:
             st.info("🔄 Monitoring active - waiting for calls...")
+            st.info("💡 If no calls appear, check the Activity Log in the Monitor tab")
         else:
             st.info("▶️ Start monitoring to see live call transcripts here.")
         return
@@ -702,27 +774,40 @@ def create_transcript_viewer():
     if show_keywords_only:
         filtered_transcripts = [t for t in filtered_transcripts if t.get('keywords_found')]
     
+    st.success(f"📊 Showing {len(filtered_transcripts)} transcripts (Total: {len(transcripts)})")
+    
     # Display transcripts
     for i, transcript in enumerate(reversed(filtered_transcripts)):
         timestamp = transcript.get('timestamp', 'Unknown')
         channel = transcript.get('channel_name', 'Unknown')
         text = transcript.get('transcript', 'No transcript')
         keywords = transcript.get('keywords_found', [])
+        duration = transcript.get('duration', 'Unknown')
+        call_id = transcript.get('call_id', 'Unknown')
         
         # Different colors for keyword matches
         if keywords:
             with st.container():
                 st.error(f"🚨 {timestamp} - {channel}")
                 st.error(f"**Keywords found:** {', '.join(keywords)}")
+                st.error(f"**Call ID:** {call_id} | **Duration:** {duration}s")
                 st.text_area("Transcript", value=text, height=100, disabled=True, key=f"transcript_kw_{i}")
                 if transcript.get('audio_url'):
                     st.markdown(f"[🎧 Listen to Audio]({transcript['audio_url']})")
+                
+                # Show raw call data for debugging
+                if st.checkbox(f"Show raw data for call {call_id}", key=f"raw_{i}"):
+                    st.json(transcript.get('raw_call_data', {}))
                 st.markdown("---")
         else:
-            with st.expander(f"📞 {timestamp} - {channel}", expanded=(i < 2)):
+            with st.expander(f"📞 {timestamp} - {channel} (ID: {call_id}, {duration}s)", expanded=(i < 2)):
                 st.text_area("Transcript", value=text, height=100, disabled=True, key=f"transcript_{i}")
                 if transcript.get('audio_url'):
                     st.markdown(f"[🎧 Listen to Audio]({transcript['audio_url']})")
+                
+                # Show raw call data for debugging
+                if st.checkbox(f"Show raw data", key=f"raw_normal_{i}"):
+                    st.json(transcript.get('raw_call_data', {}))
     
     # Auto-refresh
     if auto_scroll and st.session_state.monitor_running:
