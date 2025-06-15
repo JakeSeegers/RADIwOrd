@@ -232,11 +232,11 @@ class RadioMonitorAPI:
             st.error(f"Discovery error: {e}")
             return {}
     
-    def test_all_endpoints(self):
-        """Test what endpoints actually exist with AUTHENTICATED JWT"""
+    def discover_what_actually_works(self):
+        """Brute force test to find what endpoints actually exist"""
         # First authenticate user
         if not self.authenticate_user():
-            st.error("❌ User authentication failed - required for most endpoints")
+            st.error("❌ User authentication failed")
             return
         
         # Generate authenticated JWT
@@ -247,76 +247,83 @@ class RadioMonitorAPI:
         
         headers = {"Authorization": f"Bearer {jwt_token}"}
         
-        # Test the endpoints from the documentation with AUTHENTICATED JWT
-        test_endpoints = [
-            ("/calls/v1/playlists_public", "Get all public playlists"),
-            ("/calls/v1/groups_county/741", "Get groups for Indianapolis"),
-            ("/calls/v1/groups_county/1307", "Get groups for your county"),
-            ("/calls/v1/playlists_user", "Get your playlists (auth required)"),
+        st.subheader("🕵️ Brute Force Endpoint Discovery")
+        st.info("Testing every possible endpoint format to see what actually works...")
+        
+        # Test all possible endpoint variations
+        test_variations = [
+            # From documentation (but apparently don't work)
+            "/calls/v1/groups_county/741",
+            "/calls/v1/groups_county/1307", 
+            
+            # Try different formats
+            "/calls/v1/county/741/groups",
+            "/calls/v1/county_groups/741",
+            "/calls/v1/counties/741/groups",
+            
+            # Try playlists (these might work)
+            "/calls/v1/playlists_public",
+            "/calls/v1/playlists_county/741",
+            "/calls/v1/playlists_county/1307",
+            "/calls/v1/county_playlists/741",
+            
+            # Try other documented endpoints
+            "/calls/v1/playlists_user",
+            
+            # Maybe there's a browse/search endpoint?
+            "/calls/v1/browse",
+            "/calls/v1/search",
+            "/calls/v1/groups",
+            "/calls/v1/counties",
+            
+            # Maybe it's under a different path?
+            "/common/v1/counties",
+            "/feeds/v1/counties",
         ]
         
-        st.subheader("🔬 API Endpoint Testing (With User Authentication)")
-        st.info(f"Testing with User ID: {st.session_state.user_id}")
+        working_endpoints = []
         
-        for endpoint, description in test_endpoints:
+        for endpoint in test_variations:
             try:
                 url = f"{self.base_url}{endpoint}"
                 response = requests.get(url, headers=headers)
                 
                 if response.status_code == 200:
-                    st.success(f"✅ {endpoint} - Works!")
-                    st.info(f"Description: {description}")
-                    data = response.json()
-                    if isinstance(data, list):
-                        st.info(f"Returns list with {len(data)} items")
-                        if len(data) > 0:
-                            st.info(f"Sample item keys: {list(data[0].keys()) if isinstance(data[0], dict) else 'Not dict'}")
-                    elif isinstance(data, dict):
-                        st.info(f"Returns dict with keys: {list(data.keys())}")
+                    st.success(f"✅ {endpoint} - WORKS!")
+                    working_endpoints.append(endpoint)
+                    
+                    try:
+                        data = response.json()
+                        if isinstance(data, list):
+                            st.info(f"  Returns list with {len(data)} items")
+                            if len(data) > 0 and isinstance(data[0], dict):
+                                st.info(f"  Sample keys: {list(data[0].keys())}")
+                        elif isinstance(data, dict):
+                            st.info(f"  Returns dict with keys: {list(data.keys())}")
+                    except:
+                        st.info(f"  Non-JSON response")
                         
                 elif response.status_code == 404:
-                    st.warning(f"❌ {endpoint} - Not found")
+                    st.text(f"❌ {endpoint} - Not found")
                 elif response.status_code == 401:
-                    st.error(f"🔒 {endpoint} - Authentication failed")
+                    st.warning(f"🔒 {endpoint} - Auth failed")
+                elif response.status_code == 403:
+                    st.warning(f"🚫 {endpoint} - Forbidden")
                 else:
                     st.info(f"⚠️ {endpoint} - Status {response.status_code}")
-                    try:
-                        error_data = response.json()
-                        st.json(error_data)
-                    except:
-                        st.text(response.text[:200])
                     
             except Exception as e:
                 st.error(f"❌ {endpoint} - Error: {e}")
         
-        # Also try to get all public playlists to see what's available
-        st.subheader("📋 Browse Available Public Playlists")
-        try:
-            url = f"{self.base_url}/calls/v1/playlists_public"
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code == 200:
-                data = response.json()
-                st.success(f"✅ Found {len(data) if isinstance(data, list) else 1} public playlists")
-                
-                if isinstance(data, list) and len(data) > 0:
-                    # Show sample playlist structure
-                    sample = data[0]
-                    st.info("Sample playlist structure:")
-                    st.json(sample)
-                    
-                    # Look for counties
-                    counties_found = set()
-                    for playlist in data[:10]:  # Check first 10
-                        ctids = playlist.get('ctids', [])
-                        counties_found.update(ctids)
-                    
-                    st.info(f"Sample counties with playlists: {sorted(list(counties_found))[:10]}")
-                    
-        except Exception as e:
-            st.error(f"Error browsing public playlists: {e}")
+        st.subheader("🎯 Working Endpoints Summary")
+        if working_endpoints:
+            st.success(f"Found {len(working_endpoints)} working endpoints:")
+            for endpoint in working_endpoints:
+                st.write(f"✅ {endpoint}")
+        else:
+            st.error("No working endpoints found! Something is wrong with authentication or API access.")
         
-        return
+        return working_endpoints
     
     def get_live_calls(self, group_ids, last_pos=None):
         """Get live calls for selected groups"""
@@ -702,9 +709,9 @@ def create_api_test():
                     st.error("❌ JWT generation failed")
     
     with col2:
-        if st.button("🔬 Test All Endpoints"):
-            with st.spinner("Testing all API endpoints..."):
-                monitor.api.test_all_endpoints()
+        if st.button("🕵️ Brute Force Discovery"):
+            with st.spinner("Testing ALL possible endpoints..."):
+                monitor.api.discover_what_actually_works()
 
 def create_settings_page():
     """Create settings page"""
