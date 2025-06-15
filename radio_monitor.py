@@ -15,14 +15,14 @@ from email.mime.text import MimeText
 from email.mime.multipart import MimeMultipart
 import urllib.request
 import io
+import random
 
-# Try to import whisper, fall back gracefully if not available
+# Try to import OpenAI for transcription
 try:
-    import whisper
-    WHISPER_AVAILABLE = True
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
 except ImportError:
-    WHISPER_AVAILABLE = False
-    st.warning("⚠️ Whisper not installed. Audio transcription disabled. Install with: pip install openai-whisper")
+    OPENAI_AVAILABLE = False
 
 # Page config
 st.set_page_config(
@@ -45,10 +45,11 @@ DEFAULT_CONFIG = {
     'email_password': 'rmbnkxsellydolrl',
     'smtp_server': 'smtp.gmail.com',
     'smtp_port': 587,
-    'whisper_model': 'small',
+    'whisper_model': 'whisper-1',
     'min_duration': 2,
     'poll_interval': 5,
-    'keywords': ['ice', 'immigration', 'federal', 'detain', 'dpss', 'gunshot', 'shots fired', 'officer down']
+    'keywords': ['ice', 'immigration', 'federal', 'detain', 'dpss', 'gunshot', 'shots fired', 'officer down'],
+    'openai_api_key': ''  # Users can add their OpenAI API key for transcription
 }
 
 # Initialize session state
@@ -155,7 +156,7 @@ class RadioMonitorAPI:
             jwt_token = self.generate_jwt()
             headers = {"Authorization": f"Bearer {jwt_token}"}
             
-            # Get county groups (this endpoint might vary)
+            # Get county groups
             url = f"{self.base_url}/calls/v1/groups_county/{county_id}"
             response = requests.get(url, headers=headers)
             
@@ -186,7 +187,7 @@ class RadioMonitorAPI:
         """Get live calls for selected groups"""
         try:
             if not self.authenticate_user():
-                return []
+                return [], None
             
             jwt_token = self.generate_jwt(include_user_auth=True)
             headers = {"Authorization": f"Bearer {jwt_token}"}
@@ -215,34 +216,39 @@ class RadioMonitorAPI:
             st.error(f"Live calls error: {e}")
             return [], None
 
-class AudioTranscriber:
-    """Handle audio transcription with Whisper"""
+class OpenAITranscriber:
+    """Handle audio transcription using OpenAI Whisper API"""
     
     def __init__(self):
-        self.model = None
-        if WHISPER_AVAILABLE:
+        self.client = None
+        if OPENAI_AVAILABLE and st.session_state.get('openai_api_key'):
             try:
-                self.model = whisper.load_model(st.session_state.whisper_model)
+                self.client = OpenAI(api_key=st.session_state.openai_api_key)
             except Exception as e:
-                st.error(f"Whisper model load error: {e}")
+                st.error(f"OpenAI client setup error: {e}")
     
     def transcribe_audio_url(self, audio_url):
-        """Download and transcribe audio from URL"""
-        if not self.model:
-            return "Transcription unavailable - Whisper not loaded"
+        """Download and transcribe audio from URL using OpenAI API"""
+        if not self.client:
+            return "🔧 Add your OpenAI API key in Settings to enable real-time transcription!"
         
         try:
             # Download audio file
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
                 urllib.request.urlretrieve(audio_url, temp_file.name)
                 
-                # Transcribe
-                result = self.model.transcribe(temp_file.name)
+                # Transcribe using OpenAI API
+                with open(temp_file.name, "rb") as audio_file:
+                    transcript = self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        response_format="text"
+                    )
                 
                 # Clean up
                 os.unlink(temp_file.name)
                 
-                return result["text"].strip()
+                return transcript.strip()
         
         except Exception as e:
             return f"Transcription error: {e}"
@@ -311,7 +317,7 @@ class RadioMonitor:
     
     def __init__(self):
         self.api = RadioMonitorAPI()
-        self.transcriber = AudioTranscriber()
+        self.transcriber = OpenAITranscriber()
         self.keyword_matcher = KeywordMatcher()
         self.last_pos = None
     
@@ -359,11 +365,11 @@ class RadioMonitor:
             }
             
             # Transcribe audio if available
-            if audio_url and self.transcriber.model:
+            if audio_url:
                 transcript = self.transcriber.transcribe_audio_url(audio_url)
                 transcript_data['transcript'] = transcript
                 
-                # Check for keywords
+                # Check for keywords in transcription
                 keywords_found = self.keyword_matcher.find_keywords(transcript)
                 transcript_data['keywords_found'] = keywords_found
                 
@@ -519,6 +525,12 @@ def create_monitoring_dashboard():
     with col4:
         st.metric("Keywords Found", st.session_state.monitor_stats["keywords_found"])
     
+    # Transcription status
+    if st.session_state.get('openai_api_key'):
+        st.success("🎙️ Real-time transcription: ENABLED")
+    else:
+        st.warning("🔧 Add OpenAI API key in Settings for real-time transcription")
+    
     # Control buttons
     control_col1, control_col2 = st.columns([1, 1])
     
@@ -609,7 +621,9 @@ def create_settings_page():
     """Create settings page"""
     st.header("⚙️ Settings & Configuration")
     
-    api_tab, email_tab, keywords_tab = st.tabs(["🔑 API Settings", "📧 Email Alerts", "🔍 Keywords"])
+    api_tab, email_tab, keywords_tab, transcription_tab = st.tabs([
+        "🔑 API Settings", "📧 Email Alerts", "🔍 Keywords", "🎙️ Transcription"
+    ])
     
     with api_tab:
         st.subheader("Broadcastify API Configuration")
@@ -650,6 +664,41 @@ def create_settings_page():
             keyword_list = [kw.strip().lower() for kw in keywords_text.split('\n') if kw.strip()]
             st.session_state.keywords = keyword_list
             st.success(f"Saved {len(keyword_list)} keywords")
+    
+    with transcription_tab:
+        st.subheader("AI Transcription Settings")
+        
+        st.markdown("**Enable real-time speech-to-text with OpenAI Whisper:**")
+        
+        openai_key = st.text_input(
+            "OpenAI API Key", 
+            type="password",
+            value=st.session_state.get('openai_api_key', ''),
+            help="Get your API key from https://platform.openai.com/api-keys"
+        )
+        
+        if st.button("💾 Save OpenAI Key"):
+            st.session_state.openai_api_key = openai_key
+            # Reinitialize transcriber with new key
+            monitor.transcriber = OpenAITranscriber()
+            if openai_key:
+                st.success("✅ OpenAI API key saved! Real-time transcription enabled.")
+            else:
+                st.info("OpenAI key cleared. Transcription disabled.")
+        
+        if st.session_state.get('openai_api_key'):
+            st.success("🎙️ **Real-time transcription: ENABLED**")
+            st.info("💰 **Cost**: ~$0.006 per minute of audio (~$0.36/hour)")
+        else:
+            st.warning("🔧 **Add your OpenAI API key to enable transcription**")
+            st.markdown("""
+            **To get an OpenAI API key:**
+            1. Go to [platform.openai.com](https://platform.openai.com)
+            2. Sign up or log in
+            3. Go to API Keys section
+            4. Create a new secret key
+            5. Copy and paste it above
+            """)
 
 # ===================================================================
 # MAIN APPLICATION
@@ -675,6 +724,12 @@ def main():
         
         st.metric("Selected Channels", len(st.session_state.get('selected_channels', [])))
         st.metric("Keywords", len(st.session_state.get('keywords', [])))
+        
+        # Transcription status in sidebar
+        if st.session_state.get('openai_api_key'):
+            st.success("🎙️ Transcription: ON")
+        else:
+            st.warning("🔧 Add OpenAI key for transcription")
     
     # Main content
     if page == "🔍 Discovery":
