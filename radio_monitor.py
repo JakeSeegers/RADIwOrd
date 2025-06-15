@@ -134,89 +134,75 @@ class RadioMonitorAPI:
             st.error(f"Authentication error: {e}")
             return False
     
-    def discover_county_channels(self, county_id):
-        """Discover channels by county using AUTHENTICATED user JWT"""
+    def discover_county_feeds(self, county_id):
+        """Discover FEEDS by county using the CORRECT Broadcastify Feed API"""
         try:
-            # FIRST: Authenticate user to get uid and token
-            if not self.authenticate_user():
-                st.error("❌ User authentication failed - required for county discovery")
-                return {}
+            # Use the CORRECT API endpoint for FEEDS
+            base_url = "https://api.broadcastify.com/audio/"
             
-            # SECOND: Generate JWT with user authentication
-            jwt_token = self.generate_jwt(include_user_auth=True)
-            if not jwt_token:
-                st.error("Failed to generate authenticated JWT token")
-                return {}
+            # Simple API key authentication (not JWT!)
+            params = {
+                'a': 'county',
+                'ctid': county_id,
+                'type': 'json',
+                'key': st.session_state.api_key
+            }
             
-            headers = {"Authorization": f"Bearer {jwt_token}"}
+            url = f"{base_url}?{'&'.join([f'{k}={v}' for k, v in params.items()])}"
             
-            # Use the CORRECT endpoint with AUTHENTICATED JWT
-            url = f"{self.base_url}/calls/v1/groups_county/{county_id}"
+            st.info(f"🔍 Trying CORRECT API: {url}")
+            st.info(f"📋 Using API Key: {st.session_state.api_key[:10]}...")
             
-            st.info(f"🔍 Trying with AUTHENTICATED JWT: {url}")
-            st.info(f"📋 User ID: {st.session_state.user_id}")
-            st.info(f"📋 Headers: Authorization: Bearer {jwt_token[:20]}...")
-            
-            response = requests.get(url, headers=headers)
+            response = requests.get(base_url, params=params)
             
             st.info(f"📊 Response Status: {response.status_code}")
             st.info(f"📄 Response Headers: {dict(response.headers)}")
             
             if response.status_code == 200:
                 data = response.json()
-                st.success(f"✅ SUCCESS! County groups found:")
+                st.success(f"✅ SUCCESS! Found feeds for county {county_id}:")
                 st.json(data)
                 
                 discovered = {}
                 
-                # Handle groups response
-                if isinstance(data, dict):
-                    groups = data.get('groups', [])
-                    if groups:
-                        st.info(f"Found {len(groups)} groups in response")
-                        for group in groups:
-                            if isinstance(group, dict):
-                                group_id = group.get('groupId') or group.get('id')
-                                description = (group.get('description') or 
-                                             group.get('descr') or 
-                                             group.get('name') or 
-                                             f"Group {group_id}")
-                                if group_id:
-                                    discovered[str(group_id)] = description
-                    else:
-                        st.info("Response has 'groups' key but it's empty")
+                # Parse feed data
+                if isinstance(data, list):
+                    st.info(f"Found {len(data)} feeds")
+                    for feed in data:
+                        if isinstance(feed, dict):
+                            feed_id = feed.get('feedId') or feed.get('id')
+                            description = (feed.get('descr') or 
+                                         feed.get('description') or 
+                                         feed.get('name') or 
+                                         f"Feed {feed_id}")
+                            if feed_id:
+                                discovered[str(feed_id)] = description
                 
-                elif isinstance(data, list):
-                    st.info(f"Direct list response with {len(data)} items")
-                    for group in data:
-                        if isinstance(group, dict):
-                            group_id = group.get('groupId') or group.get('id')
-                            description = (group.get('description') or 
-                                         group.get('descr') or 
-                                         group.get('name') or 
-                                         f"Group {group_id}")
-                            if group_id:
-                                discovered[str(group_id)] = description
+                elif isinstance(data, dict):
+                    # Handle single feed or nested structure
+                    feeds = data.get('feeds', [data])
+                    for feed in feeds:
+                        if isinstance(feed, dict):
+                            feed_id = feed.get('feedId') or feed.get('id')
+                            description = (feed.get('descr') or 
+                                         feed.get('description') or 
+                                         feed.get('name') or 
+                                         f"Feed {feed_id}")
+                            if feed_id:
+                                discovered[str(feed_id)] = description
                 
                 if discovered:
-                    st.success(f"🎉 Successfully discovered {len(discovered)} groups!")
+                    st.success(f"🎉 Successfully discovered {len(discovered)} feeds!")
                 else:
-                    st.warning("Got 200 response but no groups found in data structure")
+                    st.warning("Got 200 response but no feeds found in data structure")
                 
                 return discovered
             
             elif response.status_code == 401:
-                st.error("❌ Authentication failed")
-                st.info("Check your Broadcastify credentials in Settings")
+                st.error("❌ Authentication failed - check your API key")
                 
             elif response.status_code == 404:
-                st.warning(f"❌ County {county_id} not found")
-                st.info("This could mean:")
-                st.markdown("""
-                - County ID doesn't exist in the database
-                - No Broadcastify Calls coverage for this county
-                - County has no active groups
-                """)
+                st.warning(f"❌ County {county_id} not found in feed database")
                 
             else:
                 st.error(f"❌ Unexpected response: {response.status_code}")
@@ -478,23 +464,27 @@ monitor = RadioMonitor()
 
 def create_discovery_interface():
     """Create channel discovery interface"""
-    st.header("🔍 Discover Live Radio Channels")
+    st.header("🔍 Discover Live Radio Feeds")
+    
+    # Add success message about using correct API
+    st.success("✅ Now using the CORRECT Broadcastify Feed API (not Calls API)!")
+    st.info("This will find live audio feeds (what most people want) instead of individual call recordings.")
     
     # Add debug section
-    st.subheader("🔬 Debug County Discovery")
-    st.info("This will show detailed debug info to figure out why discovery isn't working")
+    st.subheader("🔬 Test Feed Discovery")
+    st.info("Using the correct api.broadcastify.com/audio/ endpoint")
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
         county_id = st.text_input(
-            "Enter County ID for Debug Test",
+            "Enter County ID for Feed Discovery",
             placeholder="e.g., 741 for Indianapolis",
-            help="This will show detailed API response info"
+            help="This uses the correct Broadcastify Feed API"
         )
     
     with col2:
-        if st.button("🔍 Debug Discovery", type="primary"):
+        if st.button("🔍 Discover Feeds", type="primary"):
             if county_id:
                 test_county_discovery(county_id, f"County {county_id}")
             else:
@@ -525,39 +515,50 @@ def create_discovery_interface():
     st.markdown("---")
     
     # Manual group addition
-    st.subheader("➕ Manual Group Addition")
-    st.info("If discovery doesn't work, manually add Group IDs from the web interface")
+    st.subheader("➕ Manual Feed Addition")
+    st.info("Add Feed IDs manually if discovery doesn't find what you need")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        manual_id = st.text_input("Group ID", placeholder="e.g., 100-22361 or c-223312")
+        manual_id = st.text_input("Feed ID", placeholder="e.g., 32602")
     with col2:
-        manual_name = st.text_input("Channel Name", placeholder="e.g., Ann Arbor DPSS")
+        manual_name = st.text_input("Feed Name", placeholder="e.g., Indianapolis Metro Police")
     with col3:
         if st.button("➕ Add"):
             if manual_id and manual_name:
                 st.session_state.discovered_channels[manual_id] = manual_name
-                st.success("Channel added!")
+                st.success("Feed added!")
                 st.rerun()
+    
+    st.markdown("---")
+    
+    # Add explanation of the difference
+    st.info("""
+    **📻 Feeds vs Calls:**
+    - **Feeds** = Live audio streams (like traditional scanner apps)
+    - **Calls** = Individual recorded transmissions with metadata
+    
+    Most users want **Feeds** for live monitoring, which is what this app now discovers!
+    """)
 
 def test_county_discovery(county_id, county_name):
-    """Test discovery for a specific county"""
-    with st.spinner(f"Discovering channels in {county_name}..."):
-        discovered = monitor.api.discover_county_channels(county_id)
+    """Test discovery for a specific county using CORRECT API"""
+    with st.spinner(f"Discovering feeds in {county_name}..."):
+        discovered = monitor.api.discover_county_feeds(county_id)
         if discovered:
             st.session_state.discovered_channels.update(discovered)
-            st.success(f"✅ Found {len(discovered)} channels in {county_name}!")
+            st.success(f"✅ Found {len(discovered)} feeds in {county_name}!")
             st.rerun()
         else:
-            st.error(f"❌ No channels found in {county_name}")
+            st.error(f"❌ No feeds found in {county_name}")
 
 def create_channel_selection():
-    """Create channel selection interface"""
-    st.header("📻 Channel Selection")
+    """Create feed selection interface"""
+    st.header("📻 Feed Selection")
     
     if not st.session_state.discovered_channels:
-        st.info("🔍 No channels discovered yet. Use the Discovery section above to find channels.")
+        st.info("🔍 No feeds discovered yet. Use the Discovery section above to find feeds.")
         return
     
     col1, col2 = st.columns([1, 1])
@@ -571,14 +572,14 @@ def create_channel_selection():
             st.session_state.selected_channels = []
             st.rerun()
     
-    # Channel list
+    # Feed list
     channel_data = []
-    for channel_id, description in st.session_state.discovered_channels.items():
-        is_selected = channel_id in st.session_state.selected_channels
+    for feed_id, description in st.session_state.discovered_channels.items():
+        is_selected = feed_id in st.session_state.selected_channels
         
         channel_data.append({
             "Select": is_selected,
-            "Channel ID": channel_id,
+            "Feed ID": feed_id,
             "Description": description,
         })
     
@@ -591,18 +592,18 @@ def create_channel_selection():
             hide_index=True,
             column_config={
                 "Select": st.column_config.CheckboxColumn("Select", default=False),
-                "Channel ID": st.column_config.TextColumn("Channel ID", width="medium"),
+                "Feed ID": st.column_config.TextColumn("Feed ID", width="medium"),
                 "Description": st.column_config.TextColumn("Description", width="large"),
             }
         )
         
-        selected_channels = edited_df[edited_df["Select"]]["Channel ID"].tolist()
+        selected_channels = edited_df[edited_df["Select"]]["Feed ID"].tolist()
         if selected_channels != st.session_state.selected_channels:
             st.session_state.selected_channels = selected_channels
 
 def create_monitoring_dashboard():
     """Create monitoring dashboard"""
-    st.header("📻 Live Radio Monitor")
+    st.header("📻 Live Feed Monitor")
     
     # Status indicators
     col1, col2, col3 = st.columns(3)
@@ -612,10 +613,13 @@ def create_monitoring_dashboard():
         st.metric("Status", status)
     
     with col2:
-        st.metric("Channels", len(st.session_state.selected_channels))
+        st.metric("Feeds", len(st.session_state.selected_channels))
     
     with col3:
         st.metric("Calls Processed", st.session_state.monitor_stats["calls_processed"])
+    
+    # Important note about feeds vs calls
+    st.warning("🚧 **Note**: This monitor is designed for Calls API but we're now using Feed API. Feed monitoring needs different implementation. For now, this shows the concept.")
     
     # Control buttons
     col1, col2 = st.columns([1, 1])
@@ -623,11 +627,12 @@ def create_monitoring_dashboard():
     with col1:
         if st.button("▶️ Start Monitoring", disabled=st.session_state.monitor_running):
             if st.session_state.selected_channels:
-                start_monitoring()
-                st.success("Monitoring started!")
-                st.rerun()
+                st.warning("⚠️ Feed monitoring not fully implemented yet. This is designed for Calls API.")
+                # start_monitoring()  # Disabled for now
+                # st.success("Monitoring started!")
+                # st.rerun()
             else:
-                st.warning("Please select channels first")
+                st.warning("Please select feeds first")
     
     with col2:
         if st.button("⏹️ Stop Monitoring", disabled=not st.session_state.monitor_running):
@@ -693,25 +698,31 @@ def create_api_test():
     with col1:
         if st.button("Test Basic Connection"):
             with st.spinner("Testing API connection..."):
-                # Test basic JWT generation
+                # Test basic JWT generation (for old API)
                 jwt_token = monitor.api.generate_jwt()
                 if jwt_token:
-                    st.success("✅ JWT generation successful")
+                    st.success("✅ JWT generation successful (for Calls API)")
                     
-                    # Test authentication
+                    # Test authentication (for old API)
                     if monitor.api.authenticate_user():
-                        st.success("✅ User authentication successful")
+                        st.success("✅ User authentication successful (for Calls API)")
                         st.success(f"User ID: {st.session_state.user_id}")
-                        st.success(f"Token expires: {datetime.fromtimestamp(time.time() + 3600)}")
                     else:
                         st.error("❌ User authentication failed")
                 else:
                     st.error("❌ JWT generation failed")
     
     with col2:
-        if st.button("🕵️ Brute Force Discovery"):
-            with st.spinner("Testing ALL possible endpoints..."):
-                monitor.api.discover_what_actually_works()
+        if st.button("🔍 Test Feed API"):
+            with st.spinner("Testing CORRECT Feed API..."):
+                # Test the correct Feed API
+                discovered = monitor.api.discover_county_feeds("741")  # Test with Indianapolis
+                if discovered:
+                    st.success(f"✅ Feed API works! Found {len(discovered)} feeds for Indianapolis")
+                    for feed_id, name in list(discovered.items())[:3]:  # Show first 3
+                        st.info(f"Feed {feed_id}: {name}")
+                else:
+                    st.error("❌ Feed API test failed")
 
 def create_settings_page():
     """Create settings page"""
@@ -796,7 +807,7 @@ def main():
         create_settings_page()
     
     st.markdown("---")
-    st.markdown("*Radio Monitor - Real-time radio monitoring*")
+    st.markdown("*Radio Monitor - Now using correct Broadcastify Feed API*")
 
 if __name__ == "__main__":
     main()
